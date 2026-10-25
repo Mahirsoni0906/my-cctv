@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>CCTV - Camera Node</title>
   
-  <!-- PWA Configuration -->
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#000000">
   <meta name="mobile-web-app-capable" content="yes">
@@ -31,7 +30,6 @@
     #logBox { margin-top: 15px; padding: 10px; background: #000; border-radius: 8px; font-family: monospace; font-size: 11px; text-align: left; height: 110px; overflow-y: auto; color: #34c759; border: 1px solid #222; }
     .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; background: #2c2c2e; color: #ffd60a; font-family: monospace; font-size: 13px; margin-top: 5px; }
 
-    /* Modals */
     .overlay-modal {
       display: none;
       position: fixed;
@@ -58,7 +56,7 @@
     <div id="setupArea">
       <input type="text" id="cameraId" placeholder="Choose Any Name (e.g. cam1)" />
       <input type="password" id="userPass" placeholder="Vault & Stop Password" />
-      <button class="btn-green" onclick="activateCCTV()">Lock & Start CCTV</button>
+      <button class="btn-green" id="startBtn" onclick="activateCCTV()">Lock & Start CCTV</button>
     </div>
 
     <video id="preview" autoplay playsinline muted></video>
@@ -96,9 +94,8 @@
 
   <script>
     // --- CREDENTIALS ---
-    const BOT_TOKEN = "8870229096:AAFJSMIBUsWuWTH1v7MyEUdIf8t5ToNHhaQ";
-    const CHAT_ID = "-1003997436380";
-    // Unique namespace prefix prevents your chosen names from colliding with others
+    const BOT_TOKEN = "PASTE_YOUR_BOT_TOKEN_HERE";
+    const CHAT_ID = "PASTE_YOUR_CHANNEL_ID_HERE";
     const SECRET_PREFIX = "mahir_cctv_pvt_";
 
     let localStream = null;
@@ -115,7 +112,6 @@
       box.scrollTop = box.scrollHeight;
     }
 
-    // Prevent screen dimming
     async function requestWakeLock() {
       try {
         if ('wakeLock' in navigator) {
@@ -125,7 +121,6 @@
       } catch (err) {}
     }
 
-    // Trap Android Back button
     function trapBackButton() {
       window.history.pushState({ page: "recording" }, null, window.location.href);
       window.addEventListener("popstate", function () {
@@ -140,7 +135,6 @@
       document.getElementById("backWarningModal").style.display = "none";
     }
 
-    // AES-GCM 256 derivation & encryption
     async function getCryptoKey(password, salt) {
       const enc = new TextEncoder();
       const baseKey = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]);
@@ -181,6 +175,8 @@
     }
 
     async function activateCCTV() {
+      if (isRunning) return;
+
       const camId = document.getElementById("cameraId").value.trim().toLowerCase();
       const pass = document.getElementById("userPass").value;
 
@@ -190,14 +186,17 @@
       }
       activePassword = pass;
 
+      // Disable button immediately so double taps cannot occur
+      const startBtn = document.getElementById("startBtn");
+      startBtn.disabled = true;
+      startBtn.innerText = "Starting...";
+
       try {
         if (document.documentElement.requestFullscreen) {
           await document.documentElement.requestFullscreen();
         }
       } catch (e) {}
 
-      document.getElementById("setupArea").style.display = "none";
-      document.getElementById("activeControls").style.display = "block";
       log("Requesting camera access...");
 
       try {
@@ -208,4 +207,118 @@
 
         const preview = document.getElementById("preview");
         preview.srcObject = localStream;
-        preview.style
+        preview.style.display = "block";
+
+        document.getElementById("setupArea").style.display = "none";
+        document.getElementById("activeControls").style.display = "block";
+
+        isRunning = true;
+        trapBackButton();
+        await requestWakeLock();
+
+        startEncryptedStorageLoop();
+        initLiveStreaming(camId);
+      } catch (err) {
+        log(`Hardware Error: ${err.message}`);
+        startBtn.disabled = false;
+        startBtn.innerText = "Lock & Start CCTV";
+      }
+    }
+
+    function initLiveStreaming(userChosenId) {
+      if (peer) {
+        try { peer.destroy(); } catch (e) {}
+      }
+
+      const uniqueNetworkId = SECRET_PREFIX + userChosenId;
+      log(`Registering camera: ${userChosenId}...`);
+
+      peer = new Peer(uniqueNetworkId);
+
+      peer.on("open", () => {
+        log(`🟢 Live stream ready! ID: ${userChosenId}`);
+        const badge = document.getElementById("liveBadge");
+        badge.innerText = `Camera ID: ${userChosenId}`;
+        badge.style.display = "inline-block";
+      });
+
+      peer.on("call", (call) => {
+        log("📞 Viewer connecting live...");
+        call.answer(localStream);
+      });
+
+      peer.on("error", (err) => {
+        if (err.type === "unavailable-id") {
+          log("⚠️ Server clearing old connection. Retrying in 2s...");
+          setTimeout(() => {
+            if (isRunning) initLiveStreaming(userChosenId);
+          }, 2000);
+        } else {
+          log(`Peer Notice: ${err.type}`);
+        }
+      });
+    }
+
+    function startEncryptedStorageLoop() {
+      const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp8") ? "video/webm;codecs=vp8" : "";
+      mediaRecorder = mime ? new MediaRecorder(localStream, { mimeType: mime }) : new MediaRecorder(localStream);
+
+      mediaRecorder.ondataavailable = async (e) => {
+        if (e.data && e.data.size > 0 && isRunning) {
+          log("Encrypting 10s chunk...");
+          const encrypted = await encryptBlob(e.data, activePassword);
+          await sendToVault(encrypted, `cctv_${Date.now()}.enc`);
+        }
+      };
+
+      mediaRecorder.start(10000);
+    }
+
+    function promptStop() {
+      document.getElementById("stopError").innerText = "";
+      document.getElementById("stopPassInput").value = "";
+      document.getElementById("stopModal").style.display = "block";
+    }
+
+    function closeStopModal() {
+      document.getElementById("stopModal").style.display = "none";
+    }
+
+    function verifyAndStop() {
+      const inputPass = document.getElementById("stopPassInput").value;
+      if (inputPass !== activePassword) {
+        document.getElementById("stopError").innerText = "❌ Incorrect Password!";
+        return;
+      }
+
+      isRunning = false;
+      closeStopModal();
+
+      if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+      if (localStream) localStream.getTracks().forEach(track => track.stop());
+      if (peer) peer.destroy();
+      if (wakeLock) { wakeLock.release(); wakeLock = null; }
+      if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+
+      document.getElementById("preview").style.display = "none";
+      document.getElementById("activeControls").style.display = "none";
+      document.getElementById("liveBadge").style.display = "none";
+      
+      const startBtn = document.getElementById("startBtn");
+      startBtn.disabled = false;
+      startBtn.innerText = "Lock & Start CCTV";
+      document.getElementById("setupArea").style.display = "block";
+
+      log("🛑 CCTV stopped cleanly.");
+    }
+
+    window.addEventListener("beforeunload", (e) => {
+      if (isRunning) {
+        e.preventDefault();
+        e.returnValue = "Camera is actively recording!";
+        return e.returnValue;
+      }
+    });
+  </script>
+</body>
+</html>
