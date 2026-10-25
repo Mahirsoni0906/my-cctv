@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CCTV - Live Viewer</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    body { background: #000; color: #eee; font-family: sans-serif; text-align: center; padding: 20px; margin: 0; }
+    .card { background: #1c1c1e; padding: 20px; border-radius: 12px; max-width: 500px; margin: auto; }
+    input { width: 90%; padding: 12px; margin: 10px 0; border-radius: 8px; border: 1px solid #444; background: #2c2c2e; color: #fff; font-size: 16px; }
+    button { width: 95%; padding: 14px; font-size: 16px; font-weight: bold; background: #007aff; color: white; border: none; border-radius: 8px; cursor: pointer; }
+    video { width: 100%; border-radius: 8px; margin-top: 15px; border: 2px solid #007aff; display: none; }
+    #status { font-size: 14px; color: #ffd60a; margin-top: 15px; }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h2>📡 Live CCTV Monitor</h2>
+    <input type="text" id="targetCamId" placeholder="Enter Camera ID (e.g. home99)" />
+    <button id="connectBtn" onclick="connectLive()">Connect Live Stream</button>
+
+    <p id="status">Enter the Camera ID configured on Phone 1</p>
+    <video id="remoteFeed" autoplay playsinline controls></video>
+  </div>
+
+  <script>
+    let peer = null;
+
+    function connectLive() {
+      const targetId = document.getElementById("targetCamId").value.trim().toLowerCase();
+      const status = document.getElementById("status");
+      const video = document.getElementById("remoteFeed");
+
+      if (!targetId) {
+        alert("Please enter the Camera ID.");
+        return;
+      }
+
+      status.innerText = "Connecting to signaling network...";
+      status.style.color = "#ffd60a";
+
+      peer = new Peer();
+
+      peer.on("open", () => {
+        status.innerText = `Calling camera [${targetId}]...`;
+
+        // Request an empty media stream call to initiate the connection
+        navigator.mediaDevices.getUserMedia({ video: false, audio: true })
+          .catch(() => null)
+          .then((emptyAudio) => {
+            // Initiate call to camera
+            const call = peer.call(targetId, emptyAudio || new MediaStream());
+
+            call.on("stream", (remoteStream) => {
+              status.innerText = "🔴 LIVE FEED ACTIVE";
+              status.style.color = "#34c759";
+              video.style.display = "block";
+              video.srcObject = remoteStream;
+              video.play();
+            });
+
+            call.on("close", () => {
+              status.innerText = "Connection closed by camera.";
+              status.style.color = "#ff453a";
+            });
+          });
+      });
+
+      peer.on("error", (err) => {
+        status.innerText = `Connection Error: ${err.type}`;
+        status.style.color = "#ff453a";
+      });
+    }
+  </script>
+</body>
+</html>
