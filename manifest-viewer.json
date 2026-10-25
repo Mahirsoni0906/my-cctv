@@ -1,0 +1,22 @@
+{
+  "name": "CCTV Live Monitor",
+  "short_name": "CCTV Monitor",
+  "description": "Live monitor and footage decryptor",
+  "start_url": "./live.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0c10",
+  "theme_color": "#0b0c10",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3687/3687412.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3687/3687412.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
