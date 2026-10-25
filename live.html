@@ -4,17 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CCTV - Live Viewer</title>
-  <!-- PWA Configuration -->
+  
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#000000">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js').catch(err => console.log('SW error:', err));
-    }
-  </script>
+  
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
     body { background: #0b0c10; color: #eee; font-family: sans-serif; text-align: center; padding: 20px; margin: 0; }
@@ -22,31 +16,30 @@
     input { width: 90%; padding: 12px; margin: 10px 0; border-radius: 8px; border: 1px solid #45a29e; background: #0b0c10; color: #fff; font-size: 16px; outline: none; }
     button { width: 95%; padding: 14px; font-size: 16px; font-weight: bold; background: #66fcf1; color: #0b0c10; border: none; border-radius: 8px; cursor: pointer; }
     .video-wrapper { position: relative; margin-top: 15px; border-radius: 10px; overflow: hidden; background: #000; border: 2px solid #45a29e; display: none; }
-    video { width: 100%; height: auto; max-height: 450px; display: block; object-fit: contain; }
+    video { width: 100%; height: auto; max-height: 480px; display: block; object-fit: contain; }
     #status { font-size: 14px; color: #ffd60a; margin-top: 15px; font-weight: bold; }
-    .controls { margin-top: 10px; }
-    .unmute-btn { width: auto; padding: 8px 16px; font-size: 13px; background: #ff5252; color: #fff; margin-top: 5px; }
+    .unmute-btn { width: auto; padding: 8px 16px; font-size: 13px; background: #ff5252; color: #fff; margin: 8px 0; border: none; border-radius: 6px; cursor: pointer; }
   </style>
 </head>
 <body>
 
   <div class="card">
     <h2>📡 Live CCTV Monitor</h2>
-    <input type="text" id="targetCamId" placeholder="Enter Camera ID (e.g. cam1)" />
+    <input type="text" id="targetCamId" placeholder="Enter Camera Name (e.g. cam1)" />
     <button id="connectBtn" onclick="connectLive()">Connect Live Stream</button>
 
-    <p id="status">Enter the Camera ID and click Connect</p>
+    <p id="status">Enter the Camera Name and click Connect</p>
 
     <div class="video-wrapper" id="videoBox">
-      <!-- muted + playsinline allows browser instant autoplay without blocking -->
       <video id="remoteFeed" autoplay playsinline muted></video>
-      <div class="controls">
+      <div>
         <button class="unmute-btn" id="unmuteBtn" onclick="toggleAudio()">🔊 Unmute Audio</button>
       </div>
     </div>
   </div>
 
   <script>
+    const SECRET_PREFIX = "mahir_cctv_pvt_";
     let peer = null;
 
     function toggleAudio() {
@@ -58,31 +51,36 @@
     }
 
     function connectLive() {
-      const targetId = document.getElementById("targetCamId").value.trim().toLowerCase();
+      const userChosenId = document.getElementById("targetCamId").value.trim().toLowerCase();
       const status = document.getElementById("status");
       const video = document.getElementById("remoteFeed");
       const videoBox = document.getElementById("videoBox");
 
-      if (!targetId) {
-        alert("Please enter the Camera ID.");
+      if (!userChosenId) {
+        alert("Please enter the Camera Name.");
         return;
       }
+
+      const fullNetworkId = SECRET_PREFIX + userChosenId;
 
       status.innerText = "Connecting to network...";
       status.style.color = "#ffd60a";
 
+      if (peer) {
+        try { peer.destroy(); } catch (e) {}
+      }
+
       peer = new Peer();
 
       peer.on("open", () => {
-        status.innerText = `Calling camera [${targetId}]...`;
+        status.innerText = `Calling camera [${userChosenId}]...`;
 
-        // Create an empty canvas audio/video stream to initiate peer connection
+        // Dummy stream to trigger the peer call handshake cleanly
         const canvas = document.createElement("canvas");
-        canvas.width = 10;
-        canvas.height = 10;
+        canvas.width = 10; canvas.height = 10;
         const dummyStream = canvas.captureStream(5);
 
-        const call = peer.call(targetId, dummyStream);
+        const call = peer.call(fullNetworkId, dummyStream);
 
         call.on("stream", (remoteStream) => {
           status.innerText = "🔴 LIVE FEED ACTIVE";
@@ -90,20 +88,21 @@
           videoBox.style.display = "block";
 
           video.srcObject = remoteStream;
-          // Force play
-          video.play().catch(err => {
-            console.warn("Autoplay needed user interaction:", err);
-          });
+          video.play().catch(() => {});
         });
 
         call.on("close", () => {
-          status.innerText = "Disconnected.";
+          status.innerText = "Camera disconnected.";
           status.style.color = "#ff453a";
         });
       });
 
       peer.on("error", (err) => {
-        status.innerText = `Connection Error: ${err.type}`;
+        if (err.type === "peer-unavailable") {
+          status.innerText = `Camera "${userChosenId}" is offline or not found.`;
+        } else {
+          status.innerText = `Connection Error: ${err.type}`;
+        }
         status.style.color = "#ff453a";
       });
     }
