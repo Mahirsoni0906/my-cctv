@@ -21,7 +21,7 @@
     * { box-sizing: border-box; }
     body { background: #000; color: #eee; font-family: sans-serif; text-align: center; margin: 0; padding: 15px; overflow-x: hidden; }
     .card { background: #1c1c1e; padding: 20px; border-radius: 12px; max-width: 420px; margin: auto; border: 1px solid #333; }
-    input { width: 90%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #444; background: #2c2c2e; color: #fff; font-size: 16px; }
+    input { width: 90%; padding: 12px; margin: 6px 0; border-radius: 8px; border: 1px solid #444; background: #2c2c2e; color: #fff; font-size: 15px; }
     button { width: 95%; padding: 14px; font-size: 16px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
     .btn-green { background: #34c759; color: white; }
     .btn-red { background: #ff453a; color: white; }
@@ -54,8 +54,10 @@
     <h2>🔒 CCTV Camera Hub</h2>
 
     <div id="setupArea">
-      <input type="text" id="cameraId" placeholder="Choose Any Name (e.g. cam1)" />
+      <input type="text" id="cameraId" placeholder="Camera Name (e.g. cam1)" />
       <input type="password" id="userPass" placeholder="Vault & Stop Password" />
+      <input type="password" id="botTokenInput" placeholder="Telegram Bot Token" />
+      <input type="text" id="chatIdInput" placeholder="Telegram Channel ID (-100...)" />
       <button class="btn-green" id="startBtn" onclick="activateCCTV()">Lock & Start CCTV</button>
     </div>
 
@@ -66,7 +68,7 @@
       <button class="btn-red" onclick="promptStop()">🛑 Stop Recording</button>
     </div>
 
-    <div id="logBox">[Enter name and password to activate]</div>
+    <div id="logBox">[Fill fields and tap start. Credentials save locally on this phone.]</div>
   </div>
 
   <!-- Password Stop Modal -->
@@ -93,17 +95,26 @@
   </div>
 
   <script>
-    // --- CREDENTIALS ---
-    const BOT_TOKEN = "PASTE_YOUR_BOT_TOKEN_HERE";
-    const CHAT_ID = "PASTE_YOUR_CHANNEL_ID_HERE";
     const SECRET_PREFIX = "mahir_cctv_pvt_";
 
+    let BOT_TOKEN = "";
+    let CHAT_ID = "";
     let localStream = null;
     let peer = null;
     let activePassword = "";
     let isRunning = false;
     let mediaRecorder = null;
     let wakeLock = null;
+
+    // Load saved settings from phone's private storage
+    window.onload = () => {
+      const savedToken = localStorage.getItem("cctv_bot_token");
+      const savedChatId = localStorage.getItem("cctv_chat_id");
+      const savedCamId = localStorage.getItem("cctv_cam_id");
+      if (savedToken) document.getElementById("botTokenInput").value = savedToken;
+      if (savedChatId) document.getElementById("chatIdInput").value = savedChatId;
+      if (savedCamId) document.getElementById("cameraId").value = savedCamId;
+    };
 
     function log(msg) {
       const box = document.getElementById("logBox");
@@ -179,14 +190,20 @@
 
       const camId = document.getElementById("cameraId").value.trim().toLowerCase();
       const pass = document.getElementById("userPass").value;
+      BOT_TOKEN = document.getElementById("botTokenInput").value.trim();
+      CHAT_ID = document.getElementById("chatIdInput").value.trim();
 
-      if (!camId || !pass || pass.length < 6) {
-        alert("Enter Camera Name and Password (min 6 chars).");
+      if (!camId || !pass || pass.length < 6 || !BOT_TOKEN || !CHAT_ID) {
+        alert("Please fill all fields: Name, Password (min 6 chars), Bot Token, and Channel ID.");
         return;
       }
       activePassword = pass;
 
-      // Disable button immediately so double taps cannot occur
+      // Save credentials only in this phone's browser storage
+      localStorage.setItem("cctv_bot_token", BOT_TOKEN);
+      localStorage.setItem("cctv_chat_id", CHAT_ID);
+      localStorage.setItem("cctv_cam_id", camId);
+
       const startBtn = document.getElementById("startBtn");
       startBtn.disabled = true;
       startBtn.innerText = "Starting...";
@@ -249,7 +266,7 @@
 
       peer.on("error", (err) => {
         if (err.type === "unavailable-id") {
-          log("⚠️ Server clearing old connection. Retrying in 2s...");
+          log("⚠️ Re-registering connection...");
           setTimeout(() => {
             if (isRunning) initLiveStreaming(userChosenId);
           }, 2000);
