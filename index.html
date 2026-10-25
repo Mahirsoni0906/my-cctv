@@ -2,42 +2,86 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>CCTV - Camera Node</title>
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
-    body { background: #111; color: #eee; font-family: sans-serif; text-align: center; padding: 15px; margin: 0; }
-    .card { background: #1c1c1e; padding: 20px; border-radius: 12px; max-width: 400px; margin: auto; }
+    * { box-sizing: border-box; }
+    body { background: #000; color: #eee; font-family: sans-serif; text-align: center; margin: 0; padding: 15px; overflow-x: hidden; }
+    .card { background: #1c1c1e; padding: 20px; border-radius: 12px; max-width: 420px; margin: auto; }
     input { width: 90%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #444; background: #2c2c2e; color: #fff; font-size: 16px; }
-    button { width: 95%; padding: 14px; font-size: 16px; font-weight: bold; background: #34c759; color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
-    video { width: 100%; border-radius: 8px; margin-top: 15px; border: 2px solid #333; display: none; }
-    #logBox { margin-top: 15px; padding: 10px; background: #000; border-radius: 8px; font-family: monospace; font-size: 12px; text-align: left; height: 120px; overflow-y: auto; color: #34c759; border: 1px solid #333; }
+    button { width: 95%; padding: 14px; font-size: 16px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
+    .btn-green { background: #34c759; color: white; }
+    .btn-red { background: #ff453a; color: white; }
+    video { width: 100%; border-radius: 8px; margin-top: 10px; border: 2px solid #333; display: none; }
+    #logBox { margin-top: 15px; padding: 10px; background: #000; border-radius: 8px; font-family: monospace; font-size: 11px; text-align: left; height: 110px; overflow-y: auto; color: #34c759; border: 1px solid #222; }
     .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; background: #2c2c2e; color: #ffd60a; font-family: monospace; font-size: 13px; margin-top: 5px; }
+
+    /* Modal for password-protected shutdown */
+    #stopModal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.85);
+      z-index: 9999;
+      padding-top: 25vh;
+    }
+    .modal-content {
+      background: #1c1c1e;
+      padding: 25px;
+      border-radius: 12px;
+      max-width: 340px;
+      margin: auto;
+      border: 1px solid #444;
+    }
   </style>
 </head>
 <body>
 
-  <div class="card">
-    <h2>🔒 CCTV Camera</h2>
+  <div class="card" id="mainContainer">
+    <h2>🔒 CCTV Camera Hub</h2>
+
+    <!-- Setup view -->
     <div id="setupArea">
-      <input type="text" id="cameraId" placeholder="Choose a Unique Camera ID (e.g. home99)" />
-      <input type="password" id="userPass" placeholder="Encryption Password for Vault" />
-      <button onclick="activateCCTV()">Start Camera & Live Hub</button>
+      <input type="text" id="cameraId" placeholder="Choose Camera ID (e.g. cam1)" />
+      <input type="password" id="userPass" placeholder="Vault & Stop Password" />
+      <button class="btn-green" onclick="activateCCTV()">Lock & Start CCTV</button>
     </div>
 
+    <!-- Active surveillance view -->
     <video id="preview" autoplay playsinline muted></video>
     <div id="liveBadge" class="badge" style="display:none;"></div>
-    <div id="logBox">[Set your camera ID and password to start]</div>
+    
+    <div id="activeControls" style="display:none;">
+      <button class="btn-red" onclick="promptStop()">🛑 Stop Recording</button>
+    </div>
+
+    <div id="logBox">[Enter ID and password to lock screen & activate]</div>
+  </div>
+
+  <!-- Password Prompt Modal -->
+  <div id="stopModal">
+    <div class="modal-content">
+      <h3>Authorize Stop</h3>
+      <p style="font-size: 13px; color: #aaa;">Enter your password to deactivate the camera.</p>
+      <input type="password" id="stopPassInput" placeholder="Enter Password" />
+      <button class="btn-red" onclick="verifyAndStop()">Confirm & Stop</button>
+      <button style="background:#555; color:#fff;" onclick="closeModal()">Cancel</button>
+      <p id="stopError" style="color: #ff453a; font-size: 13px; margin-top: 8px;"></p>
+    </div>
   </div>
 
   <script>
     // --- CREDENTIALS ---
-    const BOT_TOKEN = "8870229096:AAFJSMIBUsWuWTH1v7MyEUdIf8t5ToNHhaQ";
-    const CHAT_ID = "-1003997436380";
+    const BOT_TOKEN = "PASTE_YOUR_BOT_TOKEN_HERE";
+    const CHAT_ID = "PASTE_YOUR_CHANNEL_ID_HERE";
 
     let localStream = null;
     let peer = null;
     let activePassword = "";
+    let isRunning = false;
+    let mediaRecorder = null;
+    let wakeLock = null;
 
     function log(msg) {
       const box = document.getElementById("logBox");
@@ -46,6 +90,19 @@
       box.scrollTop = box.scrollHeight;
     }
 
+    // 1. Prevent screen from dimming/sleeping
+    async function requestWakeLock() {
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLock = await navigator.wakeLock.request('screen');
+          log("☀️ Screen WakeLock active (no sleep).");
+        }
+      } catch (err) {
+        console.warn("WakeLock not available:", err.message);
+      }
+    }
+
+    // 2. Encryption derivation
     async function getCryptoKey(password, salt) {
       const enc = new TextEncoder();
       const baseKey = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]);
@@ -79,23 +136,36 @@
       formData.append("caption", `🔒 Vault: ${new Date().toLocaleTimeString()}`);
       try {
         await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, { method: "POST", body: formData });
-        log("✅ Encrypted chunk backed up to Telegram.");
+        log("✅ Encrypted clip sent to Telegram.");
       } catch (err) {
         log(`❌ Backup failed: ${err.message}`);
       }
     }
 
+    // 3. Activation & Kiosk Lock
     async function activateCCTV() {
       const camId = document.getElementById("cameraId").value.trim().toLowerCase();
       const pass = document.getElementById("userPass").value;
 
       if (!camId || !pass || pass.length < 6) {
-        alert("Please provide both a Camera ID and a password (min 6 chars).");
+        alert("Enter Camera ID and password (min 6 chars).");
         return;
       }
       activePassword = pass;
 
+      // Lock browser into Fullscreen Mode
+      try {
+        if (document.documentElement.requestFullscreen) {
+          await document.documentElement.requestFullscreen();
+        }
+      } catch (e) {
+        console.warn("Fullscreen request skipped.");
+      }
+
+      // Hide config inputs
       document.getElementById("setupArea").style.display = "none";
+      document.getElementById("activeControls").style.display = "block";
+
       log("Requesting camera access...");
 
       try {
@@ -108,15 +178,19 @@
         preview.srcObject = localStream;
         preview.style.display = "block";
 
+        isRunning = true;
+        await requestWakeLock();
         initLiveStreaming(camId);
         startEncryptedStorageLoop();
+
+        log("🔒 Camera locked and running.");
       } catch (err) {
         log(`Hardware Error: ${err.message}`);
       }
     }
 
     function initLiveStreaming(camId) {
-      log(`Registering live ID: ${camId}...`);
+      log(`Registering ID: ${camId}...`);
       peer = new Peer(camId);
 
       peer.on("open", (id) => {
@@ -126,7 +200,6 @@
         badge.style.display = "inline-block";
       });
 
-      // When viewer phone calls, answer and transmit the camera stream
       peer.on("call", (call) => {
         log("📞 Viewer connecting live...");
         call.answer(localStream);
@@ -140,18 +213,78 @@
 
     function startEncryptedStorageLoop() {
       const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp8") ? "video/webm;codecs=vp8" : "";
-      const recorder = mime ? new MediaRecorder(localStream, { mimeType: mime }) : new MediaRecorder(localStream);
+      mediaRecorder = mime ? new MediaRecorder(localStream, { mimeType: mime }) : new MediaRecorder(localStream);
 
-      recorder.ondataavailable = async (e) => {
-        if (e.data && e.data.size > 0) {
+      mediaRecorder.ondataavailable = async (e) => {
+        if (e.data && e.data.size > 0 && isRunning) {
           log("Encrypting 10s chunk...");
           const encrypted = await encryptBlob(e.data, activePassword);
           await sendToVault(encrypted, `cctv_${Date.now()}.enc`);
         }
       };
 
-      recorder.start(10000); // 10 second chunks
+      mediaRecorder.start(10000);
     }
+
+    // 4. Password-Protected Stopping Sequence
+    function promptStop() {
+      document.getElementById("stopError").innerText = "";
+      document.getElementById("stopPassInput").value = "";
+      document.getElementById("stopModal").style.display = "block";
+    }
+
+    function closeModal() {
+      document.getElementById("stopModal").style.display = "none";
+    }
+
+    function verifyAndStop() {
+      const inputPass = document.getElementById("stopPassInput").value;
+      if (inputPass !== activePassword) {
+        document.getElementById("stopError").innerText = "❌ Incorrect Password!";
+        return;
+      }
+
+      // Password matches: Stop everything cleanly
+      isRunning = false;
+      closeModal();
+
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+      }
+
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+      }
+
+      if (peer) {
+        peer.destroy();
+      }
+
+      if (wakeLock) {
+        wakeLock.release();
+        wakeLock = null;
+      }
+
+      if (document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+
+      document.getElementById("preview").style.display = "none";
+      document.getElementById("activeControls").style.display = "none";
+      document.getElementById("liveBadge").style.display = "none";
+      document.getElementById("setupArea").style.display = "block";
+
+      log("🛑 CCTV stopped successfully by authorized user.");
+    }
+
+    // 5. Anti-tamper: Intercept tab close, back swipe, or reload attempts
+    window.addEventListener("beforeunload", (e) => {
+      if (isRunning) {
+        e.preventDefault();
+        e.returnValue = "Camera is actively recording! Password required to stop.";
+        return e.returnValue;
+      }
+    });
   </script>
 </body>
 </html>
