@@ -8,11 +8,9 @@
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#000000">
   <meta name="mobile-web-app-capable" content="yes">
-  
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
 
   <style>
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; touch-action: manipulation; }
     body { background: #000; color: #eee; font-family: sans-serif; text-align: center; margin: 0; padding: 15px; }
     .card { background: #1c1c1e; padding: 20px; border-radius: 12px; max-width: 420px; margin: auto; border: 1px solid #333; }
     input { width: 92%; padding: 12px; margin: 6px 0; border-radius: 8px; border: 1px solid #444; background: #2c2c2e; color: #fff; font-size: 15px; }
@@ -25,6 +23,17 @@
     .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; background: #2c2c2e; color: #ffd60a; font-family: monospace; font-size: 13px; margin-top: 5px; }
     .vault-status { font-size: 12px; color: #34c759; margin: 5px 0; display: inline-block; padding: 4px 10px; background: #132a18; border-radius: 6px; border: 1px solid #34c759; }
   </style>
+
+  <!-- Diagnostic Script for Early Boot Errors -->
+  <script>
+    window.onerror = function(msg, url, lineNo) {
+      const box = document.getElementById("logBox");
+      if (box) {
+        box.innerHTML += `<div style="color:#ff453a;">[Error L${lineNo}] ${msg}</div>`;
+      }
+      return false;
+    };
+  </script>
 </head>
 <body>
 
@@ -45,20 +54,20 @@
       </div>
 
       <div>
-        <button type="button" class="btn-link" id="toggleConfigBtn">⚙️ Edit Bot / Vault Settings</button>
+        <button type="button" class="btn-link" id="toggleConfigBtn" onclick="toggleCredentialFields()">⚙️ Edit Bot / Vault Settings</button>
       </div>
 
-      <button type="button" class="btn-green" id="startBtn">Lock & Start CCTV</button>
+      <button type="button" class="btn-green" id="startBtn" onclick="activateCCTV()">Lock & Start CCTV</button>
     </div>
 
     <!-- Active Surveillance Section -->
     <div id="activeControls" style="display: none;">
       <video id="preview" autoplay playsinline muted></video>
       <div id="liveBadge" class="badge" style="display:none;"></div>
-      <button type="button" class="btn-red" id="stopBtn">🛑 Stop Recording</button>
+      <button type="button" class="btn-red" id="stopBtn" onclick="stopCCTV()">🛑 Stop Recording</button>
     </div>
 
-    <div id="logBox">[System Ready]</div>
+    <div id="logBox">[Initializing system...]</div>
   </div>
 
   <script>
@@ -74,19 +83,27 @@
 
     function log(msg) {
       const box = document.getElementById("logBox");
-      const time = new Date().toLocaleTimeString();
-      box.innerHTML += `<div>[${time}] ${msg}</div>`;
-      box.scrollTop = box.scrollHeight;
+      if (box) {
+        const time = new Date().toLocaleTimeString();
+        box.innerHTML += `<div>[${time}] ${msg}</div>`;
+        box.scrollTop = box.scrollHeight;
+      }
     }
 
-    // Attach elements cleanly
-    const startBtn = document.getElementById("startBtn");
-    const stopBtn = document.getElementById("stopBtn");
-    const toggleBtn = document.getElementById("toggleConfigBtn");
-    const credBox = document.getElementById("credentialInputs");
-    const statusBox = document.getElementById("storedStatusBox");
+    // Toggle credentials panel
+    function toggleCredentialFields() {
+      const credBox = document.getElementById("credentialInputs");
+      const btn = document.getElementById("toggleConfigBtn");
+      if (credBox.style.display === "none") {
+        credBox.style.display = "block";
+        btn.innerText = "▲ Hide Settings";
+      } else {
+        credBox.style.display = "none";
+        btn.innerText = "⚙️ Change Stored Vault Settings";
+      }
+    }
 
-    // Load saved info
+    // Load saved settings
     try {
       const savedToken = localStorage.getItem("cctv_bot_token");
       const savedChatId = localStorage.getItem("cctv_chat_id");
@@ -96,23 +113,23 @@
       if (savedToken && savedChatId) {
         document.getElementById("botTokenInput").value = savedToken;
         document.getElementById("chatIdInput").value = savedChatId;
-        credBox.style.display = "none";
-        statusBox.style.display = "block";
-        toggleBtn.innerText = "⚙️ Change Stored Vault Settings";
+        document.getElementById("credentialInputs").style.display = "none";
+        document.getElementById("storedStatusBox").style.display = "block";
+        document.getElementById("toggleConfigBtn").innerText = "⚙️ Change Stored Vault Settings";
       }
+      log("Ready. Tap 'Lock & Start CCTV'.");
     } catch (e) {
-      log(`Storage check: ${e.message}`);
+      log("Ready. Storage check skipped.");
     }
 
-    toggleBtn.addEventListener("click", () => {
-      if (credBox.style.display === "none") {
-        credBox.style.display = "block";
-        toggleBtn.innerText = "▲ Hide Settings";
-      } else {
-        credBox.style.display = "none";
-        toggleBtn.innerText = "⚙️ Change Stored Vault Settings";
-      }
-    });
+    // Asynchronously inject PeerJS so failure to load does not break camera functionality
+    (function loadPeerJSSafely() {
+      const script = document.createElement("script");
+      script.src = "https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js";
+      script.onload = () => log("📡 Live streaming engine ready.");
+      script.onerror = () => log("⚠️ Live streaming library unreachable. Vault backup will still work.");
+      document.head.appendChild(script);
+    })();
 
     async function getCryptoKey(password, salt) {
       const enc = new TextEncoder();
@@ -153,16 +170,9 @@
       }
     }
 
-    // Android Hardware Back Trap
-    window.addEventListener("popstate", () => {
-      if (isRunning) {
-        window.history.pushState(null, null, window.location.href);
-        alert("⚠️ Camera is running! Stop recording with your password before exiting.");
-      }
-    });
-
-    startBtn.addEventListener("click", async () => {
-      log("Button pressed. Validating inputs...");
+    // Primary activation function
+    async function activateCCTV() {
+      log("Button clicked!");
 
       const camId = document.getElementById("cameraId").value.trim().toLowerCase();
       const pass = document.getElementById("userPass").value;
@@ -178,27 +188,30 @@
         return;
       }
       if (!BOT_TOKEN || !CHAT_ID) {
-        alert("Please enter your Telegram Bot Token and Channel ID.");
+        alert("Please provide both Telegram Bot Token and Channel ID.");
         return;
       }
 
       activePassword = pass;
+
       try {
         localStorage.setItem("cctv_bot_token", BOT_TOKEN);
         localStorage.setItem("cctv_chat_id", CHAT_ID);
         localStorage.setItem("cctv_cam_id", camId);
       } catch (e) {}
 
+      const startBtn = document.getElementById("startBtn");
       startBtn.disabled = true;
       startBtn.innerText = "Accessing Camera...";
-      log("Requesting camera stream...");
+      log("Requesting camera access...");
 
       try {
+        // Fallback for audio permissions
         localStream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: { ideal: "environment" } },
           audio: true
-        }).catch(async (e) => {
-          log("Audio failed, falling back to video only...");
+        }).catch(async (err) => {
+          log("Audio denied/unavailable. Continuing with video only...");
           return await navigator.mediaDevices.getUserMedia({
             video: { facingMode: { ideal: "environment" } },
             audio: false
@@ -213,8 +226,8 @@
         document.getElementById("activeControls").style.display = "block";
 
         isRunning = true;
-        window.history.pushState(null, null, window.location.href);
 
+        // WakeLock
         try {
           if ('wakeLock' in navigator) {
             wakeLock = await navigator.wakeLock.request('screen');
@@ -222,12 +235,12 @@
           }
         } catch (e) {}
 
-        // Start 10s chunk recording
+        // Start Recording
         const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp8") ? "video/webm;codecs=vp8" : "";
         mediaRecorder = mime ? new MediaRecorder(localStream, { mimeType: mime }) : new MediaRecorder(localStream);
         mediaRecorder.ondataavailable = async (e) => {
           if (e.data && e.data.size > 0 && isRunning) {
-            log("Encrypting chunk...");
+            log("Encrypting 10s chunk...");
             const encrypted = await encryptBlob(e.data, activePassword);
             await sendToVault(encrypted, `cctv_${Date.now()}.enc`);
           }
@@ -235,7 +248,7 @@
         mediaRecorder.start(10000);
         log("🔴 Recording started.");
 
-        // Start WebRTC Live signaling
+        // Live stream connection
         if (typeof Peer !== "undefined") {
           const uniqueNetworkId = SECRET_PREFIX + camId;
           peer = new Peer(uniqueNetworkId);
@@ -250,37 +263,3 @@
             call.answer(localStream);
           });
           peer.on("error", (err) => log(`Peer: ${err.type}`));
-        } else {
-          log("⚠️ PeerJS not loaded; live feed unavailable, but vault recording is active.");
-        }
-
-      } catch (err) {
-        log(`❌ Camera Error: ${err.message}`);
-        startBtn.disabled = false;
-        startBtn.innerText = "Lock & Start CCTV";
-      }
-    });
-
-    stopBtn.addEventListener("click", () => {
-      const pass = prompt("Enter Password to Stop Camera:");
-      if (pass !== activePassword) {
-        alert("❌ Incorrect Password!");
-        return;
-      }
-
-      isRunning = false;
-      if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
-      if (localStream) localStream.getTracks().forEach(t => t.stop());
-      if (peer) peer.destroy();
-      if (wakeLock) { wakeLock.release(); wakeLock = null; }
-
-      document.getElementById("preview").style.display = "none";
-      document.getElementById("activeControls").style.display = "none";
-      document.getElementById("setupArea").style.display = "block";
-      startBtn.disabled = false;
-      startBtn.innerText = "Lock & Start CCTV";
-      log("🛑 Stopped cleanly.");
-    });
-  </script>
-</body>
-</html>
