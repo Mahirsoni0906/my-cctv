@@ -21,14 +21,16 @@
     * { box-sizing: border-box; }
     body { background: #000; color: #eee; font-family: sans-serif; text-align: center; margin: 0; padding: 15px; overflow-x: hidden; }
     .card { background: #1c1c1e; padding: 20px; border-radius: 12px; max-width: 420px; margin: auto; border: 1px solid #333; }
-    input { width: 90%; padding: 12px; margin: 6px 0; border-radius: 8px; border: 1px solid #444; background: #2c2c2e; color: #fff; font-size: 15px; }
+    input { width: 92%; padding: 12px; margin: 6px 0; border-radius: 8px; border: 1px solid #444; background: #2c2c2e; color: #fff; font-size: 15px; }
     button { width: 95%; padding: 14px; font-size: 16px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
     .btn-green { background: #34c759; color: white; }
     .btn-red { background: #ff453a; color: white; }
     .btn-blue { background: #007aff; color: white; }
+    .btn-link { background: transparent; color: #0a84ff; font-size: 13px; text-decoration: underline; margin-top: 8px; padding: 6px; cursor: pointer; border: none; }
     video { width: 100%; border-radius: 8px; margin-top: 10px; border: 2px solid #333; display: none; }
     #logBox { margin-top: 15px; padding: 10px; background: #000; border-radius: 8px; font-family: monospace; font-size: 11px; text-align: left; height: 110px; overflow-y: auto; color: #34c759; border: 1px solid #222; }
     .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; background: #2c2c2e; color: #ffd60a; font-family: monospace; font-size: 13px; margin-top: 5px; }
+    .vault-status { font-size: 12px; color: #34c759; margin: 5px 0; display: inline-block; padding: 4px 10px; background: #132a18; border-radius: 6px; border: 1px solid #34c759; }
 
     .overlay-modal {
       display: none;
@@ -56,8 +58,22 @@
     <div id="setupArea">
       <input type="text" id="cameraId" placeholder="Camera Name (e.g. cam1)" />
       <input type="password" id="userPass" placeholder="Vault & Stop Password" />
-      <input type="password" id="botTokenInput" placeholder="Telegram Bot Token" />
-      <input type="text" id="chatIdInput" placeholder="Telegram Channel ID (-100...)" />
+
+      <!-- Vault Settings Status Badge -->
+      <div id="storedStatusBox" style="display: none;">
+        <span class="vault-status">✅ Telegram Vault Connected</span>
+      </div>
+
+      <!-- Telegram credentials collapsible panel -->
+      <div id="credentialInputs" style="margin-top: 5px;">
+        <input type="password" id="botTokenInput" placeholder="Telegram Bot Token" />
+        <input type="text" id="chatIdInput" placeholder="Telegram Channel ID (-100...)" />
+      </div>
+
+      <div>
+        <button type="button" class="btn-link" id="toggleConfigBtn" onclick="toggleCredentialFields()">⚙️ Edit Bot / Vault Settings</button>
+      </div>
+
       <button class="btn-green" id="startBtn" onclick="activateCCTV()">Lock & Start CCTV</button>
     </div>
 
@@ -68,7 +84,7 @@
       <button class="btn-red" onclick="promptStop()">🛑 Stop Recording</button>
     </div>
 
-    <div id="logBox">[Fill fields and tap start. Credentials save locally on this phone.]</div>
+    <div id="logBox">[Ready. Enter name and password to start]</div>
   </div>
 
   <!-- Password Stop Modal -->
@@ -106,15 +122,38 @@
     let mediaRecorder = null;
     let wakeLock = null;
 
-    // Load saved settings from phone's private storage
-    window.onload = () => {
+    // Run on boot: hide credentials if already stored on this phone
+    window.addEventListener("DOMContentLoaded", () => {
       const savedToken = localStorage.getItem("cctv_bot_token");
       const savedChatId = localStorage.getItem("cctv_chat_id");
       const savedCamId = localStorage.getItem("cctv_cam_id");
-      if (savedToken) document.getElementById("botTokenInput").value = savedToken;
-      if (savedChatId) document.getElementById("chatIdInput").value = savedChatId;
+
       if (savedCamId) document.getElementById("cameraId").value = savedCamId;
-    };
+
+      if (savedToken && savedChatId) {
+        document.getElementById("botTokenInput").value = savedToken;
+        document.getElementById("chatIdInput").value = savedChatId;
+        // Hide the input fields completely
+        document.getElementById("credentialInputs").style.display = "none";
+        document.getElementById("storedStatusBox").style.display = "block";
+        document.getElementById("toggleConfigBtn").innerText = "⚙️ Change Stored Vault Settings";
+      } else {
+        document.getElementById("credentialInputs").style.display = "block";
+        document.getElementById("storedStatusBox").style.display = "none";
+      }
+    });
+
+    function toggleCredentialFields() {
+      const credBox = document.getElementById("credentialInputs");
+      const btn = document.getElementById("toggleConfigBtn");
+      if (credBox.style.display === "none") {
+        credBox.style.display = "block";
+        btn.innerText = "▲ Hide Settings";
+      } else {
+        credBox.style.display = "none";
+        btn.innerText = "⚙️ Change Stored Vault Settings";
+      }
+    }
 
     function log(msg) {
       const box = document.getElementById("logBox");
@@ -194,12 +233,12 @@
       CHAT_ID = document.getElementById("chatIdInput").value.trim();
 
       if (!camId || !pass || pass.length < 6 || !BOT_TOKEN || !CHAT_ID) {
-        alert("Please fill all fields: Name, Password (min 6 chars), Bot Token, and Channel ID.");
+        alert("Please ensure Camera Name, Password (min 6 chars), Bot Token, and Channel ID are filled.");
         return;
       }
       activePassword = pass;
 
-      // Save credentials only in this phone's browser storage
+      // Persist permanently in phone's private storage
       localStorage.setItem("cctv_bot_token", BOT_TOKEN);
       localStorage.setItem("cctv_chat_id", CHAT_ID);
       localStorage.setItem("cctv_cam_id", camId);
@@ -259,83 +298,4 @@
         badge.style.display = "inline-block";
       });
 
-      peer.on("call", (call) => {
-        log("📞 Viewer connecting live...");
-        call.answer(localStream);
-      });
-
-      peer.on("error", (err) => {
-        if (err.type === "unavailable-id") {
-          log("⚠️ Re-registering connection...");
-          setTimeout(() => {
-            if (isRunning) initLiveStreaming(userChosenId);
-          }, 2000);
-        } else {
-          log(`Peer Notice: ${err.type}`);
-        }
-      });
-    }
-
-    function startEncryptedStorageLoop() {
-      const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp8") ? "video/webm;codecs=vp8" : "";
-      mediaRecorder = mime ? new MediaRecorder(localStream, { mimeType: mime }) : new MediaRecorder(localStream);
-
-      mediaRecorder.ondataavailable = async (e) => {
-        if (e.data && e.data.size > 0 && isRunning) {
-          log("Encrypting 10s chunk...");
-          const encrypted = await encryptBlob(e.data, activePassword);
-          await sendToVault(encrypted, `cctv_${Date.now()}.enc`);
-        }
-      };
-
-      mediaRecorder.start(10000);
-    }
-
-    function promptStop() {
-      document.getElementById("stopError").innerText = "";
-      document.getElementById("stopPassInput").value = "";
-      document.getElementById("stopModal").style.display = "block";
-    }
-
-    function closeStopModal() {
-      document.getElementById("stopModal").style.display = "none";
-    }
-
-    function verifyAndStop() {
-      const inputPass = document.getElementById("stopPassInput").value;
-      if (inputPass !== activePassword) {
-        document.getElementById("stopError").innerText = "❌ Incorrect Password!";
-        return;
-      }
-
-      isRunning = false;
-      closeStopModal();
-
-      if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
-      if (localStream) localStream.getTracks().forEach(track => track.stop());
-      if (peer) peer.destroy();
-      if (wakeLock) { wakeLock.release(); wakeLock = null; }
-      if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
-
-      document.getElementById("preview").style.display = "none";
-      document.getElementById("activeControls").style.display = "none";
-      document.getElementById("liveBadge").style.display = "none";
-      
-      const startBtn = document.getElementById("startBtn");
-      startBtn.disabled = false;
-      startBtn.innerText = "Lock & Start CCTV";
-      document.getElementById("setupArea").style.display = "block";
-
-      log("🛑 CCTV stopped cleanly.");
-    }
-
-    window.addEventListener("beforeunload", (e) => {
-      if (isRunning) {
-        e.preventDefault();
-        e.returnValue = "Camera is actively recording!";
-        return e.returnValue;
-      }
-    });
-  </script>
-</body>
-</html>
+      peer.on("call",
