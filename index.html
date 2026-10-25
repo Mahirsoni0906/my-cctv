@@ -225,3 +225,62 @@
         // Start 10s chunk recording
         const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp8") ? "video/webm;codecs=vp8" : "";
         mediaRecorder = mime ? new MediaRecorder(localStream, { mimeType: mime }) : new MediaRecorder(localStream);
+        mediaRecorder.ondataavailable = async (e) => {
+          if (e.data && e.data.size > 0 && isRunning) {
+            log("Encrypting chunk...");
+            const encrypted = await encryptBlob(e.data, activePassword);
+            await sendToVault(encrypted, `cctv_${Date.now()}.enc`);
+          }
+        };
+        mediaRecorder.start(10000);
+        log("🔴 Recording started.");
+
+        // Start WebRTC Live signaling
+        if (typeof Peer !== "undefined") {
+          const uniqueNetworkId = SECRET_PREFIX + camId;
+          peer = new Peer(uniqueNetworkId);
+          peer.on("open", () => {
+            log(`🟢 Live stream ready! ID: ${camId}`);
+            const badge = document.getElementById("liveBadge");
+            badge.innerText = `Camera ID: ${camId}`;
+            badge.style.display = "inline-block";
+          });
+          peer.on("call", (call) => {
+            log("📞 Viewer connected.");
+            call.answer(localStream);
+          });
+          peer.on("error", (err) => log(`Peer: ${err.type}`));
+        } else {
+          log("⚠️ PeerJS not loaded; live feed unavailable, but vault recording is active.");
+        }
+
+      } catch (err) {
+        log(`❌ Camera Error: ${err.message}`);
+        startBtn.disabled = false;
+        startBtn.innerText = "Lock & Start CCTV";
+      }
+    });
+
+    stopBtn.addEventListener("click", () => {
+      const pass = prompt("Enter Password to Stop Camera:");
+      if (pass !== activePassword) {
+        alert("❌ Incorrect Password!");
+        return;
+      }
+
+      isRunning = false;
+      if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+      if (localStream) localStream.getTracks().forEach(t => t.stop());
+      if (peer) peer.destroy();
+      if (wakeLock) { wakeLock.release(); wakeLock = null; }
+
+      document.getElementById("preview").style.display = "none";
+      document.getElementById("activeControls").style.display = "none";
+      document.getElementById("setupArea").style.display = "block";
+      startBtn.disabled = false;
+      startBtn.innerText = "Lock & Start CCTV";
+      log("🛑 Stopped cleanly.");
+    });
+  </script>
+</body>
+</html>
