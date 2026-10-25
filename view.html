@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CCTV - Player & Decryptor</title>
+  <style>
+    body { background: #111; color: #eee; font-family: sans-serif; text-align: center; padding: 20px; margin: 0; }
+    .card { background: #1c1c1e; padding: 20px; border-radius: 12px; max-width: 450px; margin: auto; }
+    input { width: 90%; padding: 12px; margin: 10px 0; border-radius: 8px; border: 1px solid #444; background: #2c2c2e; color: #fff; font-size: 16px; }
+    button { width: 95%; padding: 14px; font-size: 16px; font-weight: bold; background: #007aff; color: white; border: none; border-radius: 8px; cursor: pointer; }
+    video { width: 100%; border-radius: 8px; margin-top: 15px; border: 2px solid #333; display: none; }
+    #status { font-size: 14px; color: #ffd60a; margin-top: 15px; }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h2>🔓 Decrypt & Play Footage</h2>
+    <p style="font-size: 13px; color: #8e8e93;">Select the downloaded .enc file from Telegram and enter your password.</p>
+
+    <input type="file" id="filePicker" accept=".enc" />
+    <input type="password" id="userPass" placeholder="Enter Your Password" />
+    <button onclick="unlockAndPlay()">Decrypt & Watch</button>
+
+    <p id="status">Select file and enter password.</p>
+    <video id="player" controls playsinline></video>
+  </div>
+
+  <script>
+    async function getCryptoKey(password, salt) {
+      const enc = new TextEncoder();
+      const baseKey = await crypto.subtle.importKey(
+        "raw",
+        enc.encode(password),
+        "PBKDF2",
+        false,
+        ["deriveKey"]
+      );
+
+      return crypto.subtle.deriveKey(
+        { name: "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" },
+        baseKey,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["decrypt"]
+      );
+    }
+
+    async function unlockAndPlay() {
+      const fileInput = document.getElementById("filePicker");
+      const password = document.getElementById("userPass").value;
+      const status = document.getElementById("status");
+      const player = document.getElementById("player");
+
+      if (!fileInput.files.length) {
+        status.innerText = "⚠️ Please choose a .enc file first.";
+        return;
+      }
+      if (!password) {
+        status.innerText = "⚠️ Please enter your password.";
+        return;
+      }
+
+      status.innerText = "⏳ Reading and decrypting in memory...";
+      status.style.color = "#ffd60a";
+
+      try {
+        const file = fileInput.files[0];
+        const buffer = await file.arrayBuffer();
+
+        // Extract Salt (first 16 bytes) and IV (next 12 bytes)
+        const salt = buffer.slice(0, 16);
+        const iv = buffer.slice(16, 28);
+        const ciphertext = buffer.slice(28);
+
+        const key = await getCryptoKey(password, salt);
+
+        const decryptedBuffer = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: new Uint8Array(iv) },
+          key,
+          ciphertext
+        );
+
+        // Check if it's our test text file or a real video
+        const testDecoder = new TextDecoder();
+        const testText = testDecoder.decode(decryptedBuffer);
+        
+        if (testText.startsWith("test-video-content")) {
+          status.innerText = `✅ Success! Decrypted content: "${testText}"`;
+          status.style.color = "#34c759";
+          return;
+        }
+
+        // It is a real video chunk: create blob URL and play
+        const videoBlob = new Blob([decryptedBuffer], { type: "video/webm" });
+        const videoUrl = URL.createObjectURL(videoBlob);
+
+        player.src = videoUrl;
+        player.style.display = "block";
+        player.play();
+
+        status.innerText = "✅ Decrypted successfully! Playing footage.";
+        status.style.color = "#34c759";
+      } catch (err) {
+        status.innerText = "❌ Decryption failed! Wrong password or file corrupted.";
+        status.style.color = "#ff453a";
+      }
+    }
+  </script>
+</body>
+</html>
