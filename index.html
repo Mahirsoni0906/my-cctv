@@ -5,26 +5,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CCTV - Encrypted Camera</title>
   <style>
-    body { background: #111; color: #eee; font-family: sans-serif; text-align: center; padding: 20px; margin: 0; }
-    .card { background: #1c1c1e; padding: 20px; border-radius: 12px; max-width: 400px; margin: auto; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
-    input { width: 90%; padding: 12px; margin: 12px 0; border-radius: 8px; border: 1px solid #444; background: #2c2c2e; color: #fff; font-size: 16px; }
-    button { width: 95%; padding: 14px; font-size: 16px; font-weight: bold; background: #34c759; color: white; border: none; border-radius: 8px; cursor: pointer; }
+    body { background: #111; color: #eee; font-family: sans-serif; text-align: center; padding: 15px; margin: 0; }
+    .card { background: #1c1c1e; padding: 20px; border-radius: 12px; max-width: 400px; margin: auto; }
+    input { width: 90%; padding: 12px; margin: 10px 0; border-radius: 8px; border: 1px solid #444; background: #2c2c2e; color: #fff; font-size: 16px; }
+    button { width: 95%; padding: 14px; font-size: 16px; font-weight: bold; background: #34c759; color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 8px; }
+    .secondary-btn { background: #007aff; }
     video { width: 100%; border-radius: 8px; margin-top: 15px; border: 2px solid #333; display: none; }
-    #status { font-size: 14px; color: #ffd60a; margin-top: 15px; line-height: 1.5; }
+    #logBox { margin-top: 15px; padding: 10px; background: #000; border-radius: 8px; font-family: monospace; font-size: 12px; text-align: left; height: 140px; overflow-y: auto; color: #34c759; border: 1px solid #333; }
   </style>
 </head>
 <body>
 
   <div class="card">
     <h2>🔒 Encrypted CCTV</h2>
-    <p style="font-size: 13px; color: #8e8e93;">Video is encrypted in memory before leaving this device.</p>
-
-    <input type="password" id="userPass" placeholder="Create a Secret Password" />
-    <br>
-    <button id="startBtn" onclick="activateCCTV()">Start Camera & Storage</button>
+    
+    <input type="password" id="userPass" placeholder="Enter Secret Password" />
+    <button id="startBtn" onclick="activateCCTV()">Start Camera & Vault</button>
+    <button class="secondary-btn" id="testBtn" onclick="sendTestEncryptedFile()">Send 1-Sec Test File</button>
 
     <video id="preview" autoplay playsinline muted></video>
-    <p id="status">Enter your password and tap Start.</p>
+    <div id="logBox">[System ready. Enter password and tap test or start]</div>
   </div>
 
   <script>
@@ -36,7 +36,13 @@
     let mediaRecorder = null;
     let activePassword = "";
 
-    // 1. Derive AES-GCM Key using PBKDF2
+    function log(msg) {
+      const box = document.getElementById("logBox");
+      const time = new Date().toLocaleTimeString();
+      box.innerHTML += `<div>[${time}] ${msg}</div>`;
+      box.scrollTop = box.scrollHeight;
+    }
+
     async function getCryptoKey(password, salt) {
       const enc = new TextEncoder();
       const baseKey = await crypto.subtle.importKey(
@@ -48,12 +54,7 @@
       );
 
       return crypto.subtle.deriveKey(
-        {
-          name: "PBKDF2",
-          salt: salt,
-          iterations: 100000,
-          hash: "SHA-256"
-        },
+        { name: "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" },
         baseKey,
         { name: "AES-GCM", length: 256 },
         false,
@@ -61,7 +62,6 @@
       );
     }
 
-    // 2. Encrypt raw video bytes
     async function encryptBlob(blob, password) {
       const buffer = await blob.arrayBuffer();
       const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -74,7 +74,6 @@
         buffer
       );
 
-      // Package: [16 bytes Salt] + [12 bytes IV] + [Encrypted Data]
       const packed = new Uint8Array(salt.byteLength + iv.byteLength + ciphertext.byteLength);
       packed.set(salt, 0);
       packed.set(iv, salt.byteLength);
@@ -83,82 +82,91 @@
       return new Blob([packed], { type: "application/octet-stream" });
     }
 
+    async function sendToVault(fileBlob, filename) {
+      log(`Uploading ${filename}...`);
+      const formData = new FormData();
+      formData.append("chat_id", CHAT_ID);
+      formData.append("document", fileBlob, filename);
+      formData.append("caption", `🔒 Vault File: ${new Date().toLocaleTimeString()}`);
+
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
+          method: "POST",
+          body: formData
+        });
+        const json = await res.json();
+        if (json.ok) {
+          log(`✅ Upload SUCCESS! Check Telegram.`);
+        } else {
+          log(`❌ Telegram Error: ${json.description}`);
+        }
+      } catch (err) {
+        log(`❌ Network Error: ${err.message}`);
+      }
+    }
+
+    // Direct test to verify encryption + upload in 1 second
+    async function sendTestEncryptedFile() {
+      const pass = document.getElementById("userPass").value || "test123";
+      log("Generating test dummy file...");
+      const dummyBlob = new Blob(["test-video-content-12345"], { type: "text/plain" });
+      const encrypted = await encryptBlob(dummyBlob, pass);
+      await sendToVault(encrypted, `test_${Date.now()}.enc`);
+    }
+
     async function activateCCTV() {
       const pass = document.getElementById("userPass").value;
       if (!pass || pass.length < 6) {
-        alert("Please set a password with at least 6 characters!");
+        alert("Enter a password of at least 6 characters.");
         return;
       }
       activePassword = pass;
 
       document.getElementById("userPass").style.display = "none";
       document.getElementById("startBtn").style.display = "none";
-      document.getElementById("status").innerText = "Requesting camera access...";
+      document.getElementById("testBtn").style.display = "none";
 
+      log("Requesting camera access...");
       try {
         localStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 } },
+          video: { facingMode: { ideal: "environment" } },
           audio: true
         });
 
-        const previewElem = document.getElementById("preview");
-        previewElem.srcObject = localStream;
-        previewElem.style.display = "block";
+        const preview = document.getElementById("preview");
+        preview.srcObject = localStream;
+        preview.style.display = "block";
+        log("Camera active. Initializing recorder...");
 
-        document.getElementById("status").innerText = "🔴 Camera Active. Recording 15s encrypted chunks...";
-        document.getElementById("status").style.color = "#34c759";
-
-        startLoop();
+        startRecording();
       } catch (err) {
-        document.getElementById("status").innerText = "Camera Error: " + err.message;
-        document.getElementById("status").style.color = "#ff453a";
+        log(`Camera error: ${err.message}`);
       }
     }
 
-    function startLoop() {
+    function startRecording() {
+      // Pick best supported codec
+      const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp8")
+        ? "video/webm;codecs=vp8"
+        : (MediaRecorder.isTypeSupported("video/mp4") ? "video/mp4" : "");
+
       try {
-        mediaRecorder = new MediaRecorder(localStream, { mimeType: "video/webm" });
+        mediaRecorder = mime ? new MediaRecorder(localStream, { mimeType: mime }) : new MediaRecorder(localStream);
       } catch (e) {
         mediaRecorder = new MediaRecorder(localStream);
       }
 
       mediaRecorder.ondataavailable = async (e) => {
         if (e.data && e.data.size > 0) {
-          document.getElementById("status").innerText = "🔐 Encrypting in memory...";
-          
-          const encryptedFile = await encryptBlob(e.data, activePassword);
-          
-          document.getElementById("status").innerText = "☁️ Uploading encrypted package to vault...";
-          await sendToVault(encryptedFile);
-          
-          document.getElementById("status").innerText = "🔴 Active. Recording next chunk...";
-          document.getElementById("status").style.color = "#34c759";
+          log(`Captured chunk (${Math.round(e.data.size / 1024)} KB). Encrypting...`);
+          const encrypted = await encryptBlob(e.data, activePassword);
+          await sendToVault(encrypted, `cctv_${Date.now()}.enc`);
         }
       };
 
-      mediaRecorder.start();
-      setInterval(() => {
-        if (mediaRecorder && mediaRecorder.state === "recording") {
-          mediaRecorder.stop();
-          mediaRecorder.start();
-        }
-      }, 15000); // New clip every 15 seconds
-    }
-
-    async function sendToVault(fileBlob) {
-      const formData = new FormData();
-      formData.append("chat_id", CHAT_ID);
-      formData.append("document", fileBlob, `cctv_${Date.now()}.enc`);
-      formData.append("caption", `🔒 Encrypted Chunk: ${new Date().toLocaleTimeString()}`);
-
-      try {
-        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
-          method: "POST",
-          body: formData
-        });
-      } catch (err) {
-        console.error("Vault transfer error:", err);
-      }
+      // Record chunks every 10 seconds
+      mediaRecorder.start(10000);
+      log("Recorder started (10s intervals)...");
     }
   </script>
 </body>
