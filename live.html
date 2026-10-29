@@ -5,25 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>CCTV Monitor</title>
 
-  <!-- PWA App Config for Viewer -->
   <link rel="manifest" href="manifest-viewer.json">
   <meta name="theme-color" content="#0b0c10">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js').catch(() => {});
-    }
-  </script>
-
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
   <style>
     * { box-sizing: border-box; }
     body { background: #0b0c10; color: #eee; font-family: sans-serif; text-align: center; padding: 15px; margin: 0; }
     .card { background: #1f2833; padding: 20px; border-radius: 12px; max-width: 500px; margin: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
     
-    /* Navigation Tabs */
     .tabs { display: flex; margin-bottom: 15px; border-radius: 8px; overflow: hidden; background: #0b0c10; }
     .tab-btn { flex: 1; padding: 12px; background: transparent; border: none; color: #aaa; font-weight: bold; cursor: pointer; font-size: 14px; }
     .tab-btn.active { background: #66fcf1; color: #0b0c10; }
@@ -33,9 +24,8 @@
     .video-wrapper { position: relative; margin-top: 15px; border-radius: 10px; overflow: hidden; background: #000; border: 2px solid #45a29e; display: none; }
     video { width: 100%; height: auto; max-height: 440px; display: block; object-fit: contain; }
     #status { font-size: 14px; color: #ffd60a; margin-top: 15px; font-weight: bold; }
-    .unmute-btn { width: auto; padding: 8px 16px; font-size: 13px; background: #ff5252; color: #fff; margin: 8px 0; border: none; border-radius: 6px; cursor: pointer; }
+    .unmute-btn { width: auto; padding: 10px 20px; font-size: 14px; font-weight: bold; background: #ff5252; color: #fff; margin: 12px 0; border: none; border-radius: 6px; cursor: pointer; }
     
-    /* Decrypt Tab */
     #decryptTab { display: none; }
     .file-input { border: 1px dashed #45a29e; padding: 15px; border-radius: 8px; margin: 10px 0; }
   </style>
@@ -56,9 +46,9 @@
       <p id="status">Enter camera name and connect</p>
 
       <div class="video-wrapper" id="videoBox">
-        <video id="remoteFeed" autoplay playsinline muted></video>
+        <video id="remoteFeed" autoplay playsinline></video>
         <div>
-          <button class="unmute-btn" id="unmuteBtn" onclick="toggleAudio()">🔊 Unmute Audio</button>
+          <button class="unmute-btn" id="unmuteBtn" onclick="toggleAudio()">🔊 Unmute Live Audio</button>
         </div>
       </div>
     </div>
@@ -78,8 +68,8 @@
   <script>
     const SECRET_PREFIX = "mahir_cctv_pvt_";
     let peer = null;
+    let audioContext = null;
 
-    // Load saved camera name if previously entered
     window.onload = () => {
       const saved = localStorage.getItem("cctv_cam_name");
       if (saved) document.getElementById("targetCamId").value = saved;
@@ -99,12 +89,34 @@
       }
     }
 
+    // Unmute with user gesture to satisfy browser autoplay security policies
     function toggleAudio() {
       const video = document.getElementById("remoteFeed");
       const btn = document.getElementById("unmuteBtn");
-      video.muted = !video.muted;
-      btn.innerText = video.muted ? "🔊 Unmute Audio" : "🔇 Mute Audio";
-      btn.style.background = video.muted ? "#ff5252" : "#34c759";
+
+      if (video.muted) {
+        video.muted = false;
+        video.volume = 1.0;
+        video.play().catch(() => {});
+        btn.innerText = "🔇 Mute Audio";
+        btn.style.background = "#34c759";
+      } else {
+        video.muted = true;
+        btn.innerText = "🔊 Unmute Live Audio";
+        btn.style.background = "#ff5252";
+      }
+    }
+
+    // Creates a silent audio track so the WebRTC offer includes the audio channel
+    function createSilentAudioStream() {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = ctx.createOscillator();
+      const dst = ctx.createMediaStreamDestination();
+      oscillator.connect(dst);
+      oscillator.start();
+      const track = dst.stream.getAudioTracks()[0];
+      track.enabled = false; // Muted dummy track
+      return track;
     }
 
     function connectLive() {
@@ -119,7 +131,6 @@
         return;
       }
 
-      // Save for auto-fill next time
       localStorage.setItem("cctv_cam_name", userChosenId);
 
       const fullNetworkId = SECRET_PREFIX + userChosenId;
@@ -136,19 +147,34 @@
       peer.on("open", () => {
         status.innerText = `Calling camera [${userChosenId}]...`;
 
+        // Canvas dummy video track
         const canvas = document.createElement("canvas");
         canvas.width = 10; canvas.height = 10;
         const dummyStream = canvas.captureStream(5);
+
+        // Crucial: Add a dummy audio track so WebRTC agrees to negotiate incoming audio
+        try {
+          dummyStream.addTrack(createSilentAudioStream());
+        } catch (e) {
+          console.warn("Could not attach silent audio track", e);
+        }
 
         const call = peer.call(fullNetworkId, dummyStream);
 
         call.on("stream", (remoteStream) => {
           btn.innerText = "Connected";
-          status.innerText = "🔴 LIVE FEED ACTIVE";
+          
+          const audioTracks = remoteStream.getAudioTracks();
+          if (audioTracks.length > 0) {
+            status.innerText = "🔴 LIVE FEED ACTIVE (Video + Audio)";
+          } else {
+            status.innerText = "🔴 LIVE FEED ACTIVE (Video Only - No mic on camera)";
+          }
           status.style.color = "#34c759";
           videoBox.style.display = "block";
 
           video.srcObject = remoteStream;
+          video.muted = true; // Browser requires initial muted autoplay
           video.play().catch(() => {});
         });
 
@@ -164,7 +190,7 @@
         if (err.type === "peer-unavailable") {
           status.innerText = `Camera "${userChosenId}" is offline or still starting.`;
         } else {
-          status.innerText = `Connection notice: ${err.type}`;
+          status.innerText = `Notice: ${err.type}`;
         }
         status.style.color = "#ff453a";
       });
