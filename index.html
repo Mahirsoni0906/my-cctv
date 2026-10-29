@@ -114,18 +114,25 @@
       log(motionArmed ? "🔔 Motion Alerts: ARMED" : "🔕 Motion Alerts: MUTED");
     }
 
-    async function setTorch(enable) {
-      if (!localStream) return;
+  async function setTorch(enable) {
+      if (!localStream) {
+        log("⚠️ No camera stream for torch.");
+        return;
+      }
       const track = localStream.getVideoTracks()[0];
-      const capabilities = track.getCapabilities ? track.getCapabilities() : {};
-      if (capabilities.torch) {
-        try {
-          await track.applyConstraints({ advanced: [{ torch: enable }] });
-          isTorchOn = enable;
-          log(`💡 Torch: ${enable ? "ON" : "OFF"}`);
-        } catch (e) { log(`Torch Error: ${e.message}`); }
+      if (!track) return;
+
+      try {
+        await track.applyConstraints({
+          advanced: [{ torch: Boolean(enable) }]
+        });
+        isTorchOn = Boolean(enable);
+        log(💡 Torch hardware set: ${enable ? "ON" : "OFF"});
+      } catch (err) {
+        log(⚠️ Torch error: ${err.message});
       }
     }
+
 
     async function setZoom(zoomValue) {
       if (!localStream) return;
@@ -140,34 +147,63 @@
       }
     }
 
-    async function flipCamera() {
-      currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment";
+     async function flipCamera() {
+      if (!localStream) return;
+      
+      const newFacing = (currentFacingMode === "environment") ? "user" : "environment";
+      log(🔄 Switching camera to: ${newFacing}...);
+
+      const oldVideoTrack = localStream.getVideoTracks()[0];
+
+      // 1. MUST stop existing track before Android will allow opening the other lens
+      if (oldVideoTrack) {
+        oldVideoTrack.stop();
+        localStream.removeTrack(oldVideoTrack);
+      }
+
       try {
         const newStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: currentFacingMode } },
-          audio: true
-        }).catch(() => navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: currentFacingMode } },
-          audio: false
-        }));
+          video: { facingMode: { exact: newFacing } }
+        }).catch(async () => {
+          return await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: newFacing } }
+          });
+        });
 
-        const oldVideoTrack = localStream.getVideoTracks()[0];
         const newVideoTrack = newStream.getVideoTracks()[0];
+        localStream.addTrack(newVideoTrack);
+        currentFacingMode = newFacing;
+        isTorchOn = false;
 
+        // 2. Update local preview
+        const preview = document.getElementById("preview");
+        preview.srcObject = localStream;
+        preview.play().catch(() => {});
+
+        // 3. Hot-swap the track inside the active WebRTC call
         if (activeCall && activeCall.peerConnection) {
-          const sender = activeCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
-          if (sender) sender.replaceTrack(newVideoTrack);
+          const senders = activeCall.peerConnection.getSenders();
+          const videoSender = senders.find(s => s.track === null || (s.track && s.track.kind === 'video'));
+          if (videoSender) {
+            await videoSender.replaceTrack(newVideoTrack);
+            log("📡 Stream track replaced.");
+          }
         }
 
-        localStream.removeTrack(oldVideoTrack);
-        oldVideoTrack.stop();
-        localStream.addTrack(newVideoTrack);
-
-        document.getElementById("preview").srcObject = localStream;
-        isTorchOn = false;
-        log("✅ Flipped camera.");
+        log(✅ Camera flipped to ${newFacing}.);
       } catch (err) {
-        log(`Flip failed: ${err.message}`);
+        log(❌ Flip failed: ${err.message});
+      }
+    }
+        log(✅ Camera flipped to ${newFacing}.);
+      } catch (err) {
+        log(❌ Flip failed: ${err.name} - ${err.message});
+        // Fallback recovery if exact flip fails
+        try {
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
+          localStream.addTrack(fallbackStream.getVideoTracks()[0]);
+          document.getElementById("preview").srcObject = localStream;
+        } catch (e) {}
       }
     }
 
