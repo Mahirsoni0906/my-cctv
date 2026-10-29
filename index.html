@@ -24,7 +24,6 @@
     .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; background: #2c2c2e; color: #ffd60a; font-family: monospace; font-size: 13px; margin-top: 5px; }
     .vault-status { font-size: 12px; color: #34c759; margin: 5px 0; display: inline-block; padding: 4px 10px; background: #132a18; border-radius: 6px; border: 1px solid #34c759; }
 
-    /* Arm Toggle Switch Styling */
     .toggle-row {
       display: flex;
       align-items: center;
@@ -43,7 +42,6 @@
     input:checked + .slider { background-color: #34c759; }
     input:checked + .slider:before { transform: translateX(20px); }
 
-    /* Stealth Blackout Screen */
     #stealthOverlay {
       display: none;
       position: fixed;
@@ -70,10 +68,16 @@
     let CHAT_ID = "";
     let localStream = null;
     let peer = null;
+    let activeCall = null;
     let activePassword = "";
     let isRunning = false;
     let mediaRecorder = null;
     let wakeLock = null;
+    let currentFacingMode = "environment";
+    let isTorchOn = false;
+    let sirenOscillator = null;
+    let sirenInterval = null;
+    let audioCtx = null;
 
     // Smart Motion Variables
     let motionInterval = null;
@@ -82,8 +86,8 @@
     let motionArmed = true;
     let isCurrentlyDetectingMotion = false;
     let lastMotionDetectedTime = 0;
-    const MOTION_THRESHOLD = 0.09;      // Sensitivity threshold
-    const QUIET_TIME_REQUIRED = 45000;  // Must be quiet for 45s before a new alert can trigger
+    const MOTION_THRESHOLD = 0.09;
+    const QUIET_TIME_REQUIRED = 45000;
 
     function log(msg) {
       const box = document.getElementById("logBox");
@@ -119,6 +123,123 @@
       log(motionArmed ? "🔔 Motion Alerts: ARMED" : "🔕 Motion Alerts: MUTED");
     }
 
+    // --- HARDWARE ACTUATION & REMOTE COMMAND CONTROLS ---
+    async function setTorch(enable) {
+      if (!localStream) return;
+      const track = localStream.getVideoTracks()[0];
+      const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+      if (capabilities.torch) {
+        try {
+          await track.applyConstraints({ advanced: [{ torch: enable }] });
+          isTorchOn = enable;
+          log(`💡 Torch turned ${enable ? "ON" : "OFF"}`);
+        } catch (e) {
+          log(`Torch Error: ${e.message}`);
+        }
+      } else {
+        log("⚠️ Torch capability not supported on current lens.");
+      }
+    }
+
+    async function setZoom(zoomValue) {
+      if (!localStream) return;
+      const track = localStream.getVideoTracks()[0];
+      const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+      if (capabilities.zoom) {
+        try {
+          const val = Math.max(capabilities.zoom.min, Math.min(zoomValue, capabilities.zoom.max));
+          await track.applyConstraints({ advanced: [{ zoom: val }] });
+          log(`🔍 Zoom set to ${val}x`);
+        } catch (e) {
+          log(`Zoom Error: ${e.message}`);
+        }
+      }
+    }
+
+    async function flipCamera() {
+      currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment";
+      log(`🔄 Flipping camera to ${currentFacingMode}...`);
+
+      const oldTracks = localStream.getTracks();
+      try {
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: currentFacingMode } },
+          audio: true
+        }).catch(() => navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: currentFacingMode } },
+          audio: false
+        }));
+
+        const oldVideoTrack = localStream.getVideoTracks()[0];
+        const newVideoTrack = newStream.getVideoTracks()[0];
+
+        // Replace track in existing live WebRTC sender without reconnecting
+        if (activeCall && activeCall.peerConnection) {
+          const sender = activeCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+          if (sender) sender.replaceTrack(newVideoTrack);
+        }
+
+        localStream.removeTrack(oldVideoTrack);
+        oldVideoTrack.stop();
+        localStream.addTrack(newVideoTrack);
+
+        document.getElementById("preview").srcObject = localStream;
+        isTorchOn = false;
+        log("✅ Camera flipped successfully.");
+      } catch (err) {
+        log(`Flip failed: ${err.message}`);
+      }
+    }
+
+    // High-decibel Web Audio Siren Generator
+    function startSiren() {
+      if (sirenInterval) return;
+      log("🚨 SIREN ACTIVATED!");
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      let freq = 700;
+      let rising = true;
+
+      sirenOscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.setValueAtTime(1.0, audioCtx.currentTime);
+
+      sirenOscillator.type = "sawtooth";
+      sirenOscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      sirenOscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      sirenOscillator.start();
+
+      sirenInterval = setInterval(() => {
+        if (rising) {
+          freq += 60;
+          if (freq >= 1400) rising = false;
+        } else {
+          freq -= 60;
+          if (freq <= 700) rising = true;
+        }
+        if (sirenOscillator && audioCtx) {
+          sirenOscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        }
+      }, 50);
+    }
+
+    function stopSiren() {
+      if (sirenInterval) {
+        clearInterval(sirenInterval);
+        sirenInterval = null;
+      }
+      if (sirenOscillator) {
+        try { sirenOscillator.stop(); sirenOscillator.disconnect(); } catch (e) {}
+        sirenOscillator = null;
+      }
+      if (audioCtx) {
+        audioCtx.close().catch(() => {});
+        audioCtx = null;
+      }
+      log("🔕 Siren stopped.");
+    }
+
+    // --- CRYPTO & VAULT BACKUP ---
     async function getCryptoKey(password, salt) {
       const enc = new TextEncoder();
       const baseKey = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]);
@@ -179,7 +300,7 @@
       } catch (e) {}
     }
 
-    // --- SMART MOTION ENGINE ---
+    // --- MOTION SENSOR ---
     function startMotionDetection(video) {
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -188,21 +309,17 @@
 
       motionInterval = setInterval(() => {
         if (!isRunning || video.readyState < 2) return;
-
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const currImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
         if (prevImageData) {
           let diffPixels = 0;
           const totalPixels = canvas.width * canvas.height;
-
           for (let i = 0; i < currImageData.data.length; i += 4) {
             const rDiff = Math.abs(currImageData.data[i] - prevImageData.data[i]);
             const gDiff = Math.abs(currImageData.data[i+1] - prevImageData.data[i+1]);
             const bDiff = Math.abs(currImageData.data[i+2] - prevImageData.data[i+2]);
-            if ((rDiff + gDiff + bDiff) / 3 > 30) {
-              diffPixels++;
-            }
+            if ((rDiff + gDiff + bDiff) / 3 > 30) diffPixels++;
           }
 
           const score = diffPixels / totalPixels;
@@ -210,15 +327,12 @@
 
           if (score > MOTION_THRESHOLD) {
             lastMotionDetectedTime = now;
-
-            // If we are armed and wasn't already in an active alert session:
             if (motionArmed && !isCurrentlyDetectingMotion) {
               isCurrentlyDetectingMotion = true;
-              log("⚠️ Motion started! Sending 1st snapshot...");
+              log("⚠️ Motion started! Sending snapshot...");
               captureAndDispatchAlert(video);
             }
           } else {
-            // Room is quiet. If quiet for at least 45 seconds, reset state for next event
             if (isCurrentlyDetectingMotion && (now - lastMotionDetectedTime > QUIET_TIME_REQUIRED)) {
               isCurrentlyDetectingMotion = false;
               log("🍃 Scene quiet. Motion alert re-armed.");
@@ -237,7 +351,7 @@
       snapCtx.drawImage(video, 0, 0, snapCanvas.width, snapCanvas.height);
       snapCanvas.toBlob((blob) => {
         if (blob) {
-          sendTelegramPhoto(blob, `⚠️ Motion Alert! [${new Date().toLocaleTimeString()}]\n(Alerts silenced while activity continues)`);
+          sendTelegramPhoto(blob, `⚠️ Motion Alert! [${new Date().toLocaleTimeString()}]`);
         }
       }, "image/jpeg", 0.75);
     }
@@ -246,11 +360,10 @@
       if ('getBattery' in navigator) {
         navigator.getBattery().then((battery) => {
           let wasCharging = battery.charging;
-
           battery.addEventListener('chargingchange', () => {
             if (wasCharging && !battery.charging && isRunning) {
               log("🚨 Power disconnected alert!");
-              sendTelegramMessage(`🚨 SECURITY ALERT: Camera [${camId}] was UNPLUGGED from power! Battery: ${Math.round(battery.level * 100)}%.`);
+              sendTelegramMessage(`🚨 SECURITY ALERT: Camera [${camId}] was UNPLUGGED! Battery: ${Math.round(battery.level * 100)}%.`);
             }
             wasCharging = battery.charging;
           });
@@ -258,61 +371,47 @@
           heartbeatInterval = setInterval(() => {
             if (isRunning) {
               const battStatus = `${Math.round(battery.level * 100)}% (${battery.charging ? 'Charging' : 'On Battery'})`;
-              sendTelegramMessage(`🟢 CCTV Hub Heartbeat: Camera [${camId}] active. Battery: ${battStatus}`);
+              sendTelegramMessage(`🟢 CCTV Hub Heartbeat: [${camId}] active. Battery: ${battStatus}`);
             }
           }, 30 * 60 * 1000);
         });
       }
     }
 
+    // --- MAIN ENGINE ACTIVATION ---
     async function activateCCTV() {
       log("Button clicked. Validating inputs...");
 
-      const camIdElem = document.getElementById("cameraId");
-      const passElem = document.getElementById("userPass");
-      const tokenElem = document.getElementById("botTokenInput");
-      const chatElem = document.getElementById("chatIdInput");
-      const startBtn = document.getElementById("startBtn");
-
-      const camId = camIdElem.value.trim().toLowerCase();
-      const pass = passElem.value;
-      BOT_TOKEN = tokenElem.value.trim();
-      CHAT_ID = chatElem.value.trim();
+      const camId = document.getElementById("cameraId").value.trim().toLowerCase();
+      const pass = document.getElementById("userPass").value;
+      BOT_TOKEN = document.getElementById("botTokenInput").value.trim();
+      CHAT_ID = document.getElementById("chatIdInput").value.trim();
       motionArmed = document.getElementById("armToggle").checked;
 
-      if (!camId) {
-        alert("Please enter a Camera Name.");
-        return;
-      }
-      if (!pass || pass.length < 6) {
-        alert("Password must be at least 6 characters.");
-        return;
-      }
-      if (!BOT_TOKEN || !CHAT_ID) {
-        alert("Please enter Telegram Bot Token and Channel ID.");
+      if (!camId || !pass || pass.length < 6 || !BOT_TOKEN || !CHAT_ID) {
+        alert("Please ensure all fields are filled.");
         return;
       }
 
       activePassword = pass;
-
       try {
         localStorage.setItem("cctv_bot_token", BOT_TOKEN);
         localStorage.setItem("cctv_chat_id", CHAT_ID);
         localStorage.setItem("cctv_cam_id", camId);
       } catch (e) {}
 
+      const startBtn = document.getElementById("startBtn");
       startBtn.disabled = true;
       startBtn.innerText = "Accessing Camera...";
-      log("Requesting camera access...");
 
       try {
         localStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: "environment" } },
+          video: { facingMode: { ideal: currentFacingMode } },
           audio: true
         }).catch(async () => {
           log("Audio unavailable. Continuing with video-only...");
           return await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { ideal: "environment" } },
+            video: { facingMode: { ideal: currentFacingMode } },
             audio: false
           });
         });
@@ -347,44 +446,65 @@
 
         startMotionDetection(preview);
         setupPowerAndHeartbeatWatchers(camId);
-        sendTelegramMessage(`🛡️ CCTV Armed & Active: [${camId}] | Motion Alert: ${motionArmed ? 'ON' : 'OFF'}`);
+        sendTelegramMessage(`🛡️ CCTV Armed & Active: [${camId}]`);
 
-        initPeerLive(camId);
+        initPeerSignaling(camId);
 
       } catch (err) {
-        log(`❌ Hardware Error: ${err.name} - ${err.message}`);
+        log(`❌ Hardware Error: ${err.message}`);
         startBtn.disabled = false;
         startBtn.innerText = "Lock & Start CCTV";
       }
     }
 
-    function initPeerLive(camId) {
-      if (typeof Peer === "undefined") {
-        const script = document.createElement("script");
-        script.src = "https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js";
-        script.onload = () => setupPeer(camId);
-        document.head.appendChild(script);
-      } else {
-        setupPeer(camId);
-      }
-    }
-
-    function setupPeer(camId) {
-      try {
+    function initPeerSignaling(camId) {
+      const setup = () => {
         const uniqueNetworkId = SECRET_PREFIX + camId;
         peer = new Peer(uniqueNetworkId);
+
         peer.on("open", () => {
-          log(`🟢 Live stream ready! ID: ${camId}`);
+          log(`🟢 Live ready! ID: ${camId}`);
           const badge = document.getElementById("liveBadge");
           badge.innerText = `Camera ID: ${camId}`;
           badge.style.display = "inline-block";
         });
+
+        // 1. Handle incoming Live Video/Audio Call
         peer.on("call", (call) => {
-          log("📞 Viewer connected.");
+          log("📞 Viewer connected live.");
+          activeCall = call;
           call.answer(localStream);
         });
+
+        // 2. Handle incoming Remote Hardware Control Data Channel
+        peer.on("connection", (conn) => {
+          log("🔗 Remote control channel linked.");
+          conn.on("data", (data) => {
+            if (data.type === "TORCH") {
+              setTorch(data.value);
+            } else if (data.type === "ZOOM") {
+              setZoom(data.value);
+            } else if (data.type === "FLIP") {
+              flipCamera();
+            } else if (data.type === "SIREN_ON") {
+              startSiren();
+            } else if (data.type === "SIREN_OFF") {
+              stopSiren();
+            }
+          });
+        });
+
         peer.on("error", (err) => log(`Peer: ${err.type}`));
-      } catch (e) {}
+      };
+
+      if (typeof Peer === "undefined") {
+        const script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js";
+        script.onload = setup;
+        document.head.appendChild(script);
+      } else {
+        setup();
+      }
     }
 
     function stopCCTV() {
@@ -396,6 +516,7 @@
 
       isRunning = false;
       exitStealthMode();
+      stopSiren();
 
       if (motionInterval) clearInterval(motionInterval);
       if (heartbeatInterval) clearInterval(heartbeatInterval);
@@ -418,89 +539,4 @@
 
     window.addEventListener("DOMContentLoaded", () => {
       try {
-        const savedToken = localStorage.getItem("cctv_bot_token");
-        const savedChatId = localStorage.getItem("cctv_chat_id");
-        const savedCamId = localStorage.getItem("cctv_cam_id");
-
-        if (savedCamId) document.getElementById("cameraId").value = savedCamId;
-        if (savedToken && savedChatId) {
-          document.getElementById("botTokenInput").value = savedToken;
-          document.getElementById("chatIdInput").value = savedChatId;
-          document.getElementById("credentialInputs").style.display = "none";
-          document.getElementById("storedStatusBox").style.display = "block";
-          document.getElementById("toggleConfigBtn").innerText = "⚙️ Change Stored Vault Settings";
-        }
-        log("Ready. Tap 'Lock & Start CCTV'.");
-      } catch (e) {
-        log("Ready.");
-      }
-    });
-
-    window.addEventListener("popstate", () => {
-      if (isRunning) {
-        window.history.pushState(null, null, window.location.href);
-        alert("⚠️ Camera is active! Stop recording with password before exiting.");
-      }
-    });
-  </script>
-</head>
-<body>
-
-  <div class="card">
-    <h2>🔒 CCTV Camera Hub</h2>
-
-    <div id="setupArea">
-      <input type="text" id="cameraId" placeholder="Camera Name (e.g. cam1)" />
-      <input type="password" id="userPass" placeholder="Vault & Stop Password" />
-
-      <!-- Arm/Disarm Toggle -->
-      <div class="toggle-row">
-        <span class="toggle-label">🔔 Send Motion Photo Alerts</span>
-        <label class="switch">
-          <input type="checkbox" id="armToggle" checked onchange="updateMotionArmedStatus()">
-          <span class="slider"></span>
-        </label>
-      </div>
-
-      <div id="storedStatusBox" style="display: none;">
-        <span class="vault-status">✅ Telegram Vault Connected</span>
-      </div>
-
-      <div id="credentialInputs">
-        <input type="password" id="botTokenInput" placeholder="Telegram Bot Token" />
-        <input type="text" id="chatIdInput" placeholder="Telegram Channel ID (-100...)" />
-      </div>
-
-      <div>
-        <button type="button" class="btn-link" id="toggleConfigBtn" onclick="toggleCredentialFields()">⚙️ Edit Bot / Vault Settings</button>
-      </div>
-
-      <button type="button" class="btn-green" id="startBtn" onclick="activateCCTV()">Lock & Start CCTV</button>
-    </div>
-
-    <div id="activeControls" style="display: none;">
-      <video id="preview" autoplay playsinline muted></video>
-      <div id="liveBadge" class="badge" style="display:none;"></div>
-      
-      <!-- In-Session Arm Toggle -->
-      <div class="toggle-row" style="margin-top: 10px;">
-        <span class="toggle-label">🔔 Motion Alerts</span>
-        <label class="switch">
-          <input type="checkbox" id="activeArmToggle" checked onchange="document.getElementById('armToggle').checked = this.checked; updateMotionArmedStatus();">
-          <span class="slider"></span>
-        </label>
-      </div>
-
-      <button type="button" class="btn-dark" onclick="enterStealthMode()">🌙 Turn Screen Black (Stealth Mode)</button>
-      <button type="button" class="btn-red" id="stopBtn" onclick="stopCCTV()">🛑 Stop Recording</button>
-    </div>
-
-    <div id="logBox">[Loading...]</div>
-  </div>
-
-  <div id="stealthOverlay" onclick="exitStealthMode()">
-    <div id="stealthHint">[Tap anywhere to reveal controls]</div>
-  </div>
-
-</body>
-</html>
+        const savedToken = localStorage.getItem("cctv_bot_
