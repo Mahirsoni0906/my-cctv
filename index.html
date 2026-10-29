@@ -12,7 +12,7 @@
   <style>
     * { box-sizing: border-box; touch-action: manipulation; }
     body { background: #000; color: #eee; font-family: sans-serif; text-align: center; margin: 0; padding: 15px; }
-    .card { background: #1c1c1e; padding: 20px; border-radius: 12px; max-width: 420px; margin: auto; border: 1px solid #333; }
+    .card { background: #1c1c1e; padding: 20px; border-radius: 12px; max-width: 420px; margin: auto; border: 1px solid #333; position: relative; z-index: 1; }
     input[type="text"], input[type="password"] { width: 92%; padding: 12px; margin: 6px 0; border-radius: 8px; border: 1px solid #444; background: #2c2c2e; color: #fff; font-size: 15px; }
     button { width: 95%; padding: 14px; font-size: 16px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
     .btn-green { background: #34c759; color: white; }
@@ -42,8 +42,9 @@
     input:checked + .slider { background-color: #34c759; }
     input:checked + .slider:before { transform: translateX(20px); }
 
+    /* Stealth Blackout Screen - strictly hidden by default */
     #stealthOverlay {
-      display: none;
+      display: none !important;
       position: fixed;
       top: 0; left: 0;
       width: 100vw; height: 100vh;
@@ -51,13 +52,16 @@
       z-index: 99999;
       cursor: pointer;
     }
+    #stealthOverlay.active {
+      display: block !important;
+    }
     #stealthHint {
       position: absolute;
-      bottom: 20px;
+      bottom: 25px;
       width: 100%;
       text-align: center;
-      color: #1a1a1a;
-      font-size: 11px;
+      color: #222;
+      font-size: 12px;
       user-select: none;
     }
   </style>
@@ -111,11 +115,11 @@
     }
 
     function enterStealthMode() {
-      document.getElementById("stealthOverlay").style.display = "block";
+      document.getElementById("stealthOverlay").classList.add("active");
     }
 
     function exitStealthMode() {
-      document.getElementById("stealthOverlay").style.display = "none";
+      document.getElementById("stealthOverlay").classList.remove("active");
     }
 
     function updateMotionArmedStatus() {
@@ -123,7 +127,7 @@
       log(motionArmed ? "🔔 Motion Alerts: ARMED" : "🔕 Motion Alerts: MUTED");
     }
 
-    // --- HARDWARE ACTUATION & REMOTE COMMAND CONTROLS ---
+    // Hardware Controls
     async function setTorch(enable) {
       if (!localStream) return;
       const track = localStream.getVideoTracks()[0];
@@ -132,12 +136,12 @@
         try {
           await track.applyConstraints({ advanced: [{ torch: enable }] });
           isTorchOn = enable;
-          log(`💡 Torch turned ${enable ? "ON" : "OFF"}`);
+          log(`💡 Torch: ${enable ? "ON" : "OFF"}`);
         } catch (e) {
           log(`Torch Error: ${e.message}`);
         }
       } else {
-        log("⚠️ Torch capability not supported on current lens.");
+        log("⚠️ Torch not supported on current lens.");
       }
     }
 
@@ -149,7 +153,7 @@
         try {
           const val = Math.max(capabilities.zoom.min, Math.min(zoomValue, capabilities.zoom.max));
           await track.applyConstraints({ advanced: [{ zoom: val }] });
-          log(`🔍 Zoom set to ${val}x`);
+          log(`🔍 Zoom: ${val}x`);
         } catch (e) {
           log(`Zoom Error: ${e.message}`);
         }
@@ -157,386 +161,4 @@
     }
 
     async function flipCamera() {
-      currentFacingMode = (currentFacingMode === "environment") ? "user" : "environment";
-      log(`🔄 Flipping camera to ${currentFacingMode}...`);
-
-      const oldTracks = localStream.getTracks();
-      try {
-        const newStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: currentFacingMode } },
-          audio: true
-        }).catch(() => navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: currentFacingMode } },
-          audio: false
-        }));
-
-        const oldVideoTrack = localStream.getVideoTracks()[0];
-        const newVideoTrack = newStream.getVideoTracks()[0];
-
-        // Replace track in existing live WebRTC sender without reconnecting
-        if (activeCall && activeCall.peerConnection) {
-          const sender = activeCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
-          if (sender) sender.replaceTrack(newVideoTrack);
-        }
-
-        localStream.removeTrack(oldVideoTrack);
-        oldVideoTrack.stop();
-        localStream.addTrack(newVideoTrack);
-
-        document.getElementById("preview").srcObject = localStream;
-        isTorchOn = false;
-        log("✅ Camera flipped successfully.");
-      } catch (err) {
-        log(`Flip failed: ${err.message}`);
-      }
-    }
-
-    // High-decibel Web Audio Siren Generator
-    function startSiren() {
-      if (sirenInterval) return;
-      log("🚨 SIREN ACTIVATED!");
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      let freq = 700;
-      let rising = true;
-
-      sirenOscillator = audioCtx.createOscillator();
-      const gainNode = audioCtx.createGain();
-      gainNode.gain.setValueAtTime(1.0, audioCtx.currentTime);
-
-      sirenOscillator.type = "sawtooth";
-      sirenOscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
-      sirenOscillator.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
-      sirenOscillator.start();
-
-      sirenInterval = setInterval(() => {
-        if (rising) {
-          freq += 60;
-          if (freq >= 1400) rising = false;
-        } else {
-          freq -= 60;
-          if (freq <= 700) rising = true;
-        }
-        if (sirenOscillator && audioCtx) {
-          sirenOscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
-        }
-      }, 50);
-    }
-
-    function stopSiren() {
-      if (sirenInterval) {
-        clearInterval(sirenInterval);
-        sirenInterval = null;
-      }
-      if (sirenOscillator) {
-        try { sirenOscillator.stop(); sirenOscillator.disconnect(); } catch (e) {}
-        sirenOscillator = null;
-      }
-      if (audioCtx) {
-        audioCtx.close().catch(() => {});
-        audioCtx = null;
-      }
-      log("🔕 Siren stopped.");
-    }
-
-    // --- CRYPTO & VAULT BACKUP ---
-    async function getCryptoKey(password, salt) {
-      const enc = new TextEncoder();
-      const baseKey = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]);
-      return crypto.subtle.deriveKey(
-        { name: "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" },
-        baseKey,
-        { name: "AES-GCM", length: 256 },
-        false,
-        ["encrypt"]
-      );
-    }
-
-    async function encryptBlob(blob, password) {
-      const buffer = await blob.arrayBuffer();
-      const salt = crypto.getRandomValues(new Uint8Array(16));
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const key = await getCryptoKey(password, salt);
-      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, buffer);
-
-      const packed = new Uint8Array(salt.byteLength + iv.byteLength + ciphertext.byteLength);
-      packed.set(salt, 0);
-      packed.set(iv, salt.byteLength);
-      packed.set(new Uint8Array(ciphertext), salt.byteLength + iv.byteLength);
-      return new Blob([packed], { type: "application/octet-stream" });
-    }
-
-    async function sendToVault(fileBlob, filename) {
-      const formData = new FormData();
-      formData.append("chat_id", CHAT_ID);
-      formData.append("document", fileBlob, filename);
-      formData.append("caption", `🔒 Vault: ${new Date().toLocaleTimeString()}`);
-      try {
-        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, { method: "POST", body: formData });
-        log("✅ Encrypted clip backed up.");
-      } catch (err) {
-        log(`❌ Telegram upload: ${err.message}`);
-      }
-    }
-
-    async function sendTelegramMessage(text) {
-      try {
-        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: CHAT_ID, text: text })
-        });
-      } catch (e) {}
-    }
-
-    async function sendTelegramPhoto(blob, caption) {
-      const formData = new FormData();
-      formData.append("chat_id", CHAT_ID);
-      formData.append("photo", blob, `alert_${Date.now()}.jpg`);
-      formData.append("caption", caption);
-      try {
-        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, { method: "POST", body: formData });
-        log("📸 Motion photo alert sent to Telegram!");
-      } catch (e) {}
-    }
-
-    // --- MOTION SENSOR ---
-    function startMotionDetection(video) {
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      canvas.width = 64;
-      canvas.height = 48;
-
-      motionInterval = setInterval(() => {
-        if (!isRunning || video.readyState < 2) return;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const currImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-        if (prevImageData) {
-          let diffPixels = 0;
-          const totalPixels = canvas.width * canvas.height;
-          for (let i = 0; i < currImageData.data.length; i += 4) {
-            const rDiff = Math.abs(currImageData.data[i] - prevImageData.data[i]);
-            const gDiff = Math.abs(currImageData.data[i+1] - prevImageData.data[i+1]);
-            const bDiff = Math.abs(currImageData.data[i+2] - prevImageData.data[i+2]);
-            if ((rDiff + gDiff + bDiff) / 3 > 30) diffPixels++;
-          }
-
-          const score = diffPixels / totalPixels;
-          const now = Date.now();
-
-          if (score > MOTION_THRESHOLD) {
-            lastMotionDetectedTime = now;
-            if (motionArmed && !isCurrentlyDetectingMotion) {
-              isCurrentlyDetectingMotion = true;
-              log("⚠️ Motion started! Sending snapshot...");
-              captureAndDispatchAlert(video);
-            }
-          } else {
-            if (isCurrentlyDetectingMotion && (now - lastMotionDetectedTime > QUIET_TIME_REQUIRED)) {
-              isCurrentlyDetectingMotion = false;
-              log("🍃 Scene quiet. Motion alert re-armed.");
-            }
-          }
-        }
-        prevImageData = currImageData;
-      }, 500);
-    }
-
-    function captureAndDispatchAlert(video) {
-      const snapCanvas = document.createElement("canvas");
-      snapCanvas.width = video.videoWidth || 640;
-      snapCanvas.height = video.videoHeight || 480;
-      const snapCtx = snapCanvas.getContext("2d");
-      snapCtx.drawImage(video, 0, 0, snapCanvas.width, snapCanvas.height);
-      snapCanvas.toBlob((blob) => {
-        if (blob) {
-          sendTelegramPhoto(blob, `⚠️ Motion Alert! [${new Date().toLocaleTimeString()}]`);
-        }
-      }, "image/jpeg", 0.75);
-    }
-
-    function setupPowerAndHeartbeatWatchers(camId) {
-      if ('getBattery' in navigator) {
-        navigator.getBattery().then((battery) => {
-          let wasCharging = battery.charging;
-          battery.addEventListener('chargingchange', () => {
-            if (wasCharging && !battery.charging && isRunning) {
-              log("🚨 Power disconnected alert!");
-              sendTelegramMessage(`🚨 SECURITY ALERT: Camera [${camId}] was UNPLUGGED! Battery: ${Math.round(battery.level * 100)}%.`);
-            }
-            wasCharging = battery.charging;
-          });
-
-          heartbeatInterval = setInterval(() => {
-            if (isRunning) {
-              const battStatus = `${Math.round(battery.level * 100)}% (${battery.charging ? 'Charging' : 'On Battery'})`;
-              sendTelegramMessage(`🟢 CCTV Hub Heartbeat: [${camId}] active. Battery: ${battStatus}`);
-            }
-          }, 30 * 60 * 1000);
-        });
-      }
-    }
-
-    // --- MAIN ENGINE ACTIVATION ---
-    async function activateCCTV() {
-      log("Button clicked. Validating inputs...");
-
-      const camId = document.getElementById("cameraId").value.trim().toLowerCase();
-      const pass = document.getElementById("userPass").value;
-      BOT_TOKEN = document.getElementById("botTokenInput").value.trim();
-      CHAT_ID = document.getElementById("chatIdInput").value.trim();
-      motionArmed = document.getElementById("armToggle").checked;
-
-      if (!camId || !pass || pass.length < 6 || !BOT_TOKEN || !CHAT_ID) {
-        alert("Please ensure all fields are filled.");
-        return;
-      }
-
-      activePassword = pass;
-      try {
-        localStorage.setItem("cctv_bot_token", BOT_TOKEN);
-        localStorage.setItem("cctv_chat_id", CHAT_ID);
-        localStorage.setItem("cctv_cam_id", camId);
-      } catch (e) {}
-
-      const startBtn = document.getElementById("startBtn");
-      startBtn.disabled = true;
-      startBtn.innerText = "Accessing Camera...";
-
-      try {
-        localStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: currentFacingMode } },
-          audio: true
-        }).catch(async () => {
-          log("Audio unavailable. Continuing with video-only...");
-          return await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { ideal: currentFacingMode } },
-            audio: false
-          });
-        });
-
-        const preview = document.getElementById("preview");
-        preview.srcObject = localStream;
-        preview.style.display = "block";
-
-        document.getElementById("setupArea").style.display = "none";
-        document.getElementById("activeControls").style.display = "block";
-
-        isRunning = true;
-
-        try {
-          if ('wakeLock' in navigator) {
-            wakeLock = await navigator.wakeLock.request('screen');
-            log("☀️ Screen awake lock active.");
-          }
-        } catch (e) {}
-
-        const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp8") ? "video/webm;codecs=vp8" : "";
-        mediaRecorder = mime ? new MediaRecorder(localStream, { mimeType: mime }) : new MediaRecorder(localStream);
-        mediaRecorder.ondataavailable = async (e) => {
-          if (e.data && e.data.size > 0 && isRunning) {
-            log("Encrypting 10s chunk...");
-            const encrypted = await encryptBlob(e.data, activePassword);
-            await sendToVault(encrypted, `cctv_${Date.now()}.enc`);
-          }
-        };
-        mediaRecorder.start(10000);
-        log("🔴 Recording started.");
-
-        startMotionDetection(preview);
-        setupPowerAndHeartbeatWatchers(camId);
-        sendTelegramMessage(`🛡️ CCTV Armed & Active: [${camId}]`);
-
-        initPeerSignaling(camId);
-
-      } catch (err) {
-        log(`❌ Hardware Error: ${err.message}`);
-        startBtn.disabled = false;
-        startBtn.innerText = "Lock & Start CCTV";
-      }
-    }
-
-    function initPeerSignaling(camId) {
-      const setup = () => {
-        const uniqueNetworkId = SECRET_PREFIX + camId;
-        peer = new Peer(uniqueNetworkId);
-
-        peer.on("open", () => {
-          log(`🟢 Live ready! ID: ${camId}`);
-          const badge = document.getElementById("liveBadge");
-          badge.innerText = `Camera ID: ${camId}`;
-          badge.style.display = "inline-block";
-        });
-
-        // 1. Handle incoming Live Video/Audio Call
-        peer.on("call", (call) => {
-          log("📞 Viewer connected live.");
-          activeCall = call;
-          call.answer(localStream);
-        });
-
-        // 2. Handle incoming Remote Hardware Control Data Channel
-        peer.on("connection", (conn) => {
-          log("🔗 Remote control channel linked.");
-          conn.on("data", (data) => {
-            if (data.type === "TORCH") {
-              setTorch(data.value);
-            } else if (data.type === "ZOOM") {
-              setZoom(data.value);
-            } else if (data.type === "FLIP") {
-              flipCamera();
-            } else if (data.type === "SIREN_ON") {
-              startSiren();
-            } else if (data.type === "SIREN_OFF") {
-              stopSiren();
-            }
-          });
-        });
-
-        peer.on("error", (err) => log(`Peer: ${err.type}`));
-      };
-
-      if (typeof Peer === "undefined") {
-        const script = document.createElement("script");
-        script.src = "https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js";
-        script.onload = setup;
-        document.head.appendChild(script);
-      } else {
-        setup();
-      }
-    }
-
-    function stopCCTV() {
-      const pass = prompt("Enter Password to Stop Camera:");
-      if (pass !== activePassword) {
-        alert("❌ Incorrect Password!");
-        return;
-      }
-
-      isRunning = false;
-      exitStealthMode();
-      stopSiren();
-
-      if (motionInterval) clearInterval(motionInterval);
-      if (heartbeatInterval) clearInterval(heartbeatInterval);
-      if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
-      if (localStream) localStream.getTracks().forEach(t => t.stop());
-      if (peer) peer.destroy();
-      if (wakeLock) { wakeLock.release(); wakeLock = null; }
-
-      sendTelegramMessage("🛑 CCTV Hub was stopped.");
-
-      document.getElementById("preview").style.display = "none";
-      document.getElementById("activeControls").style.display = "none";
-      document.getElementById("setupArea").style.display = "block";
-      
-      const startBtn = document.getElementById("startBtn");
-      startBtn.disabled = false;
-      startBtn.innerText = "Lock & Start CCTV";
-      log("🛑 Stopped cleanly.");
-    }
-
-    window.addEventListener("DOMContentLoaded", () => {
-      try {
-        const savedToken = localStorage.getItem("cctv_bot_
+      currentFacingMode = (currentFacingMode === "
