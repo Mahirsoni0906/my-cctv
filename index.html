@@ -13,15 +13,55 @@
     * { box-sizing: border-box; touch-action: manipulation; }
     body { background: #000; color: #eee; font-family: sans-serif; text-align: center; margin: 0; padding: 15px; }
     .card { background: #1c1c1e; padding: 20px; border-radius: 12px; max-width: 420px; margin: auto; border: 1px solid #333; }
-    input { width: 92%; padding: 12px; margin: 6px 0; border-radius: 8px; border: 1px solid #444; background: #2c2c2e; color: #fff; font-size: 15px; }
+    input[type="text"], input[type="password"] { width: 92%; padding: 12px; margin: 6px 0; border-radius: 8px; border: 1px solid #444; background: #2c2c2e; color: #fff; font-size: 15px; }
     button { width: 95%; padding: 14px; font-size: 16px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
     .btn-green { background: #34c759; color: white; }
     .btn-red { background: #ff453a; color: white; }
+    .btn-dark { background: #2c2c2e; color: #ffd60a; border: 1px solid #444; }
     .btn-link { background: transparent; color: #0a84ff; font-size: 13px; text-decoration: underline; margin-top: 8px; padding: 6px; cursor: pointer; border: none; }
     video { width: 100%; border-radius: 8px; margin-top: 10px; border: 2px solid #333; display: none; background: #000; }
     #logBox { margin-top: 15px; padding: 10px; background: #000; border-radius: 8px; font-family: monospace; font-size: 11px; text-align: left; height: 130px; overflow-y: auto; color: #34c759; border: 1px solid #222; }
     .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; background: #2c2c2e; color: #ffd60a; font-family: monospace; font-size: 13px; margin-top: 5px; }
     .vault-status { font-size: 12px; color: #34c759; margin: 5px 0; display: inline-block; padding: 4px 10px; background: #132a18; border-radius: 6px; border: 1px solid #34c759; }
+
+    /* Arm Toggle Switch Styling */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 90%;
+      margin: 12px auto;
+      background: #252528;
+      padding: 10px 14px;
+      border-radius: 8px;
+    }
+    .toggle-label { font-size: 14px; color: #ddd; font-weight: bold; }
+    .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #444; transition: .3s; border-radius: 24px; }
+    .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
+    input:checked + .slider { background-color: #34c759; }
+    input:checked + .slider:before { transform: translateX(20px); }
+
+    /* Stealth Blackout Screen */
+    #stealthOverlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw; height: 100vh;
+      background: #000000;
+      z-index: 99999;
+      cursor: pointer;
+    }
+    #stealthHint {
+      position: absolute;
+      bottom: 20px;
+      width: 100%;
+      text-align: center;
+      color: #1a1a1a;
+      font-size: 11px;
+      user-select: none;
+    }
   </style>
 
   <script>
@@ -35,6 +75,16 @@
     let mediaRecorder = null;
     let wakeLock = null;
 
+    // Smart Motion Variables
+    let motionInterval = null;
+    let heartbeatInterval = null;
+    let prevImageData = null;
+    let motionArmed = true;
+    let isCurrentlyDetectingMotion = false;
+    let lastMotionDetectedTime = 0;
+    const MOTION_THRESHOLD = 0.09;      // Sensitivity threshold
+    const QUIET_TIME_REQUIRED = 45000;  // Must be quiet for 45s before a new alert can trigger
+
     function log(msg) {
       const box = document.getElementById("logBox");
       if (box) {
@@ -43,11 +93,6 @@
         box.scrollTop = box.scrollHeight;
       }
     }
-
-    window.onerror = function(msg, url, lineNo) {
-      log(`⚠️ Script Error (L${lineNo}): ${msg}`);
-      return false;
-    };
 
     function toggleCredentialFields() {
       const credBox = document.getElementById("credentialInputs");
@@ -59,6 +104,19 @@
         credBox.style.display = "none";
         btn.innerText = "⚙️ Change Stored Vault Settings";
       }
+    }
+
+    function enterStealthMode() {
+      document.getElementById("stealthOverlay").style.display = "block";
+    }
+
+    function exitStealthMode() {
+      document.getElementById("stealthOverlay").style.display = "none";
+    }
+
+    function updateMotionArmedStatus() {
+      motionArmed = document.getElementById("armToggle").checked;
+      log(motionArmed ? "🔔 Motion Alerts: ARMED" : "🔕 Motion Alerts: MUTED");
     }
 
     async function getCryptoKey(password, salt) {
@@ -100,6 +158,113 @@
       }
     }
 
+    async function sendTelegramMessage(text) {
+      try {
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: CHAT_ID, text: text })
+        });
+      } catch (e) {}
+    }
+
+    async function sendTelegramPhoto(blob, caption) {
+      const formData = new FormData();
+      formData.append("chat_id", CHAT_ID);
+      formData.append("photo", blob, `alert_${Date.now()}.jpg`);
+      formData.append("caption", caption);
+      try {
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, { method: "POST", body: formData });
+        log("📸 Motion photo alert sent to Telegram!");
+      } catch (e) {}
+    }
+
+    // --- SMART MOTION ENGINE ---
+    function startMotionDetection(video) {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      canvas.width = 64;
+      canvas.height = 48;
+
+      motionInterval = setInterval(() => {
+        if (!isRunning || video.readyState < 2) return;
+
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const currImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+        if (prevImageData) {
+          let diffPixels = 0;
+          const totalPixels = canvas.width * canvas.height;
+
+          for (let i = 0; i < currImageData.data.length; i += 4) {
+            const rDiff = Math.abs(currImageData.data[i] - prevImageData.data[i]);
+            const gDiff = Math.abs(currImageData.data[i+1] - prevImageData.data[i+1]);
+            const bDiff = Math.abs(currImageData.data[i+2] - prevImageData.data[i+2]);
+            if ((rDiff + gDiff + bDiff) / 3 > 30) {
+              diffPixels++;
+            }
+          }
+
+          const score = diffPixels / totalPixels;
+          const now = Date.now();
+
+          if (score > MOTION_THRESHOLD) {
+            lastMotionDetectedTime = now;
+
+            // If we are armed and wasn't already in an active alert session:
+            if (motionArmed && !isCurrentlyDetectingMotion) {
+              isCurrentlyDetectingMotion = true;
+              log("⚠️ Motion started! Sending 1st snapshot...");
+              captureAndDispatchAlert(video);
+            }
+          } else {
+            // Room is quiet. If quiet for at least 45 seconds, reset state for next event
+            if (isCurrentlyDetectingMotion && (now - lastMotionDetectedTime > QUIET_TIME_REQUIRED)) {
+              isCurrentlyDetectingMotion = false;
+              log("🍃 Scene quiet. Motion alert re-armed.");
+            }
+          }
+        }
+        prevImageData = currImageData;
+      }, 500);
+    }
+
+    function captureAndDispatchAlert(video) {
+      const snapCanvas = document.createElement("canvas");
+      snapCanvas.width = video.videoWidth || 640;
+      snapCanvas.height = video.videoHeight || 480;
+      const snapCtx = snapCanvas.getContext("2d");
+      snapCtx.drawImage(video, 0, 0, snapCanvas.width, snapCanvas.height);
+      snapCanvas.toBlob((blob) => {
+        if (blob) {
+          sendTelegramPhoto(blob, `⚠️ Motion Alert! [${new Date().toLocaleTimeString()}]\n(Alerts silenced while activity continues)`);
+        }
+      }, "image/jpeg", 0.75);
+    }
+
+    function setupPowerAndHeartbeatWatchers(camId) {
+      if ('getBattery' in navigator) {
+        navigator.getBattery().then((battery) => {
+          let wasCharging = battery.charging;
+
+          battery.addEventListener('chargingchange', () => {
+            if (wasCharging && !battery.charging && isRunning) {
+              log("🚨 Power disconnected alert!");
+              sendTelegramMessage(`🚨 SECURITY ALERT: Camera [${camId}] was UNPLUGGED from power! Battery: ${Math.round(battery.level * 100)}%.`);
+            }
+            wasCharging = battery.charging;
+          });
+
+          heartbeatInterval = setInterval(() => {
+            if (isRunning) {
+              const battStatus = `${Math.round(battery.level * 100)}% (${battery.charging ? 'Charging' : 'On Battery'})`;
+              sendTelegramMessage(`🟢 CCTV Hub Heartbeat: Camera [${camId}] active. Battery: ${battStatus}`);
+            }
+          }, 30 * 60 * 1000);
+        });
+      }
+    }
+
     async function activateCCTV() {
       log("Button clicked. Validating inputs...");
 
@@ -113,6 +278,7 @@
       const pass = passElem.value;
       BOT_TOKEN = tokenElem.value.trim();
       CHAT_ID = chatElem.value.trim();
+      motionArmed = document.getElementById("armToggle").checked;
 
       if (!camId) {
         alert("Please enter a Camera Name.");
@@ -179,6 +345,10 @@
         mediaRecorder.start(10000);
         log("🔴 Recording started.");
 
+        startMotionDetection(preview);
+        setupPowerAndHeartbeatWatchers(camId);
+        sendTelegramMessage(`🛡️ CCTV Armed & Active: [${camId}] | Motion Alert: ${motionArmed ? 'ON' : 'OFF'}`);
+
         initPeerLive(camId);
 
       } catch (err) {
@@ -190,11 +360,9 @@
 
     function initPeerLive(camId) {
       if (typeof Peer === "undefined") {
-        log("Loading live stream module...");
         const script = document.createElement("script");
         script.src = "https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js";
         script.onload = () => setupPeer(camId);
-        script.onerror = () => log("⚠️ Live streaming script blocked. Vault recording continues.");
         document.head.appendChild(script);
       } else {
         setupPeer(camId);
@@ -216,9 +384,7 @@
           call.answer(localStream);
         });
         peer.on("error", (err) => log(`Peer: ${err.type}`));
-      } catch (e) {
-        log(`Live error: ${e.message}`);
-      }
+      } catch (e) {}
     }
 
     function stopCCTV() {
@@ -229,10 +395,16 @@
       }
 
       isRunning = false;
+      exitStealthMode();
+
+      if (motionInterval) clearInterval(motionInterval);
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
       if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
       if (localStream) localStream.getTracks().forEach(t => t.stop());
       if (peer) peer.destroy();
       if (wakeLock) { wakeLock.release(); wakeLock = null; }
+
+      sendTelegramMessage("🛑 CCTV Hub was stopped.");
 
       document.getElementById("preview").style.display = "none";
       document.getElementById("activeControls").style.display = "none";
@@ -281,6 +453,15 @@
       <input type="text" id="cameraId" placeholder="Camera Name (e.g. cam1)" />
       <input type="password" id="userPass" placeholder="Vault & Stop Password" />
 
+      <!-- Arm/Disarm Toggle -->
+      <div class="toggle-row">
+        <span class="toggle-label">🔔 Send Motion Photo Alerts</span>
+        <label class="switch">
+          <input type="checkbox" id="armToggle" checked onchange="updateMotionArmedStatus()">
+          <span class="slider"></span>
+        </label>
+      </div>
+
       <div id="storedStatusBox" style="display: none;">
         <span class="vault-status">✅ Telegram Vault Connected</span>
       </div>
@@ -300,10 +481,25 @@
     <div id="activeControls" style="display: none;">
       <video id="preview" autoplay playsinline muted></video>
       <div id="liveBadge" class="badge" style="display:none;"></div>
+      
+      <!-- In-Session Arm Toggle -->
+      <div class="toggle-row" style="margin-top: 10px;">
+        <span class="toggle-label">🔔 Motion Alerts</span>
+        <label class="switch">
+          <input type="checkbox" id="activeArmToggle" checked onchange="document.getElementById('armToggle').checked = this.checked; updateMotionArmedStatus();">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <button type="button" class="btn-dark" onclick="enterStealthMode()">🌙 Turn Screen Black (Stealth Mode)</button>
       <button type="button" class="btn-red" id="stopBtn" onclick="stopCCTV()">🛑 Stop Recording</button>
     </div>
 
     <div id="logBox">[Loading...]</div>
+  </div>
+
+  <div id="stealthOverlay" onclick="exitStealthMode()">
+    <div id="stealthHint">[Tap anywhere to reveal controls]</div>
   </div>
 
 </body>
