@@ -120,7 +120,7 @@
       log(motionArmed ? "🔔 Motion Alerts: ARMED" : "🔕 Motion Alerts: MUTED");
     }
 
-    // --- DIRECT HARDWARE ACTUATION ---
+    // --- RELIABLE TORCH HARDWARE SWITCHER ---
     async function setTorch(enable) {
       if (!localStream) {
         log("⚠️ No camera stream active.");
@@ -138,39 +138,54 @@
       }
 
       const turnOn = Boolean(enable);
-      let success = false;
+      let executed = false;
 
-      // Method 1: Standard Track Constraints
+      // 1. Direct Track Constraints
       try {
         await track.applyConstraints({
           advanced: [{ torch: turnOn }]
         });
-        success = true;
         isTorchOn = turnOn;
-        log(`💡 Torch (Constraints): ${turnOn ? "ON" : "OFF"}`);
-      } catch (e) {
-        console.warn("Direct constraint failed, attempting ImageCapture...", e);
+        executed = true;
+        log(`💡 Torch: ${turnOn ? "ON" : "OFF"}`);
+      } catch (e1) {
+        console.warn("Direct applyConstraints failed:", e1);
       }
 
-      // Method 2: ImageCapture fallback for Android Chrome
-      if (!success && window.ImageCapture) {
+      // 2. Fallback via ImageCapture FillLight Mode
+      if (!executed && window.ImageCapture) {
         try {
           if (!imageCapture || imageCapture.track !== track) {
             imageCapture = new ImageCapture(track);
           }
           await track.applyConstraints({
-            advanced: [{ fillLightMode: turnOn ? "torch" : "off", torch: turnOn }]
+            advanced: [{ fillLightMode: turnOn ? "torch" : "off" }]
           });
           isTorchOn = turnOn;
-          success = true;
-          log(`💡 Torch (ImageCapture): ${turnOn ? "ON" : "OFF"}`);
-        } catch (err) {
-          log(`❌ Torch hardware error: ${err.name} - ${err.message}`);
+          executed = true;
+          log(`💡 Torch (FillLight): ${turnOn ? "ON" : "OFF"}`);
+        } catch (e2) {
+          console.warn("FillLightMode failed:", e2);
         }
       }
 
-      if (!success) {
-        log("⚠️ Hardware rejected torch activation.");
+      // 3. Fallback: Force constraint via getCapabilities inspection
+      if (!executed) {
+        try {
+          const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+          if ('torch' in capabilities) {
+            await track.applyConstraints({ advanced: [{ torch: turnOn }] });
+            isTorchOn = turnOn;
+            executed = true;
+            log(`💡 Torch (Capability Enforced): ${turnOn ? "ON" : "OFF"}`);
+          }
+        } catch (e3) {
+          console.warn("Capability fallback failed:", e3);
+        }
+      }
+
+      if (!executed) {
+        log("⚠️ Hardware rejected torch. Note: Front lens or wide-angle aux sensors do not have flash.");
       }
     }
 
@@ -214,7 +229,11 @@
 
       try {
         const newStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: targetFacing } }
+          video: {
+            facingMode: { ideal: targetFacing },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
         });
 
         const newVideoTrack = newStream.getVideoTracks()[0];
@@ -242,7 +261,7 @@
           } catch (e) {}
         }
 
-        log(`✅ Successfully switched to ${targetFacing} lens.`);
+        log(`✅ Switched to ${targetFacing} lens.`);
       } catch (err) {
         log(`❌ Flip error: ${err.message}`);
       }
@@ -453,22 +472,26 @@
       startBtn.innerText = "Accessing Camera...";
 
       try {
-        // Request camera with advanced torch constraint support enabled
+        // Enforce rear lens enumeration to target primary camera with flash
+        let targetDeviceId = null;
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const videoDevices = devices.filter(d => d.kind === "videoinput");
+          // On Android, back camera labels contain 'back' or 'facing back'
+          const backCam = videoDevices.find(d => d.label.toLowerCase().includes("back") && !d.label.toLowerCase().includes("wide"));
+          if (backCam) targetDeviceId = backCam.deviceId;
+        } catch (e) {}
+
+        const videoConstraints = targetDeviceId 
+          ? { deviceId: { exact: targetDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+          : { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } };
+
         localStream = await navigator.mediaDevices.getUserMedia({
-          video: { 
-            facingMode: { ideal: currentFacingMode },
-            advanced: [{ torch: false }]
-          },
+          video: videoConstraints,
           audio: true
         }).catch(async () => {
           return await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { ideal: currentFacingMode } },
-            audio: true
-          });
-        }).catch(async () => {
-          log("Audio unavailable. Continuing with video-only...");
-          return await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: { ideal: currentFacingMode } },
+            video: { facingMode: { ideal: "environment" } },
             audio: false
           });
         });
