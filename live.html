@@ -19,13 +19,49 @@
     .tab-btn { flex: 1; padding: 12px; background: transparent; border: none; color: #aaa; font-weight: bold; cursor: pointer; font-size: 14px; }
     .tab-btn.active { background: #66fcf1; color: #0b0c10; }
 
-    input { width: 95%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #45a29e; background: #0b0c10; color: #fff; font-size: 16px; outline: none; }
+    input[type="text"], input[type="password"] { width: 95%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #45a29e; background: #0b0c10; color: #fff; font-size: 16px; outline: none; }
     button.action-btn { width: 95%; padding: 14px; font-size: 16px; font-weight: bold; background: #66fcf1; color: #0b0c10; border: none; border-radius: 8px; cursor: pointer; margin-top: 5px; }
+    
     .video-wrapper { position: relative; margin-top: 15px; border-radius: 10px; overflow: hidden; background: #000; border: 2px solid #45a29e; display: none; }
     video { width: 100%; height: auto; max-height: 440px; display: block; object-fit: contain; }
     #status { font-size: 14px; color: #ffd60a; margin-top: 15px; font-weight: bold; }
-    .unmute-btn { width: auto; padding: 10px 20px; font-size: 14px; font-weight: bold; background: #ff5252; color: #fff; margin: 12px 0; border: none; border-radius: 6px; cursor: pointer; }
     
+    /* Remote Controls Panel */
+    .controls-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 15px;
+      padding: 10px;
+      background: #0b0c10;
+      border-radius: 8px;
+      border: 1px solid #333;
+    }
+    .ctrl-btn {
+      padding: 12px;
+      font-size: 13px;
+      font-weight: bold;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      color: #fff;
+    }
+    .btn-audio { background: #ff5252; }
+    .btn-torch { background: #ffd60a; color: #000; }
+    .btn-flip { background: #007aff; }
+    .btn-siren { background: #ff2a2a; }
+
+    .zoom-slider-box {
+      grid-column: span 2;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 5px 10px;
+      color: #aaa;
+      font-size: 13px;
+    }
+    .zoom-slider-box input { width: 70%; margin: 0; }
+
     #decryptTab { display: none; }
     .file-input { border: 1px dashed #45a29e; padding: 15px; border-radius: 8px; margin: 10px 0; }
   </style>
@@ -38,7 +74,7 @@
       <button class="tab-btn" id="tabVaultBtn" onclick="switchTab('vault')">🔓 Vault Player</button>
     </div>
 
-    <!-- TAB 1: LIVE FEED -->
+    <!-- TAB 1: LIVE FEED & REMOTE HARDWARE CONTROL -->
     <div id="liveTab">
       <input type="text" id="targetCamId" placeholder="Camera Name (e.g. cam1)" />
       <button class="action-btn" id="connectBtn" onclick="connectLive()">Connect Live Stream</button>
@@ -47,8 +83,18 @@
 
       <div class="video-wrapper" id="videoBox">
         <video id="remoteFeed" autoplay playsinline></video>
-        <div>
-          <button class="unmute-btn" id="unmuteBtn" onclick="toggleAudio()">🔊 Unmute Live Audio</button>
+
+        <!-- Dynamic Control Bar -->
+        <div class="controls-grid">
+          <button class="ctrl-btn btn-audio" id="unmuteBtn" onclick="toggleAudio()">🔊 Unmute Audio</button>
+          <button class="ctrl-btn btn-torch" id="torchBtn" onclick="toggleTorch()">💡 Torch: OFF</button>
+          <button class="ctrl-btn btn-flip" onclick="sendCmd('FLIP')">🔄 Flip Lens</button>
+          <button class="ctrl-btn btn-siren" id="sirenBtn" onclick="toggleSiren()">🚨 Sound Siren</button>
+
+          <div class="zoom-slider-box">
+            <span>Zoom: <b id="zoomVal">1x</b></span>
+            <input type="range" id="zoomRange" min="1" max="5" step="0.5" value="1" oninput="handleZoom(this.value)">
+          </div>
         </div>
       </div>
     </div>
@@ -68,7 +114,9 @@
   <script>
     const SECRET_PREFIX = "mahir_cctv_pvt_";
     let peer = null;
-    let audioContext = null;
+    let dataConn = null;
+    let torchState = false;
+    let sirenState = false;
 
     window.onload = () => {
       const saved = localStorage.getItem("cctv_cam_name");
@@ -89,11 +137,9 @@
       }
     }
 
-    // Unmute with user gesture to satisfy browser autoplay security policies
     function toggleAudio() {
       const video = document.getElementById("remoteFeed");
       const btn = document.getElementById("unmuteBtn");
-
       if (video.muted) {
         video.muted = false;
         video.volume = 1.0;
@@ -102,12 +148,48 @@
         btn.style.background = "#34c759";
       } else {
         video.muted = true;
-        btn.innerText = "🔊 Unmute Live Audio";
+        btn.innerText = "🔊 Unmute Audio";
         btn.style.background = "#ff5252";
       }
     }
 
-    // Creates a silent audio track so the WebRTC offer includes the audio channel
+    // --- REMOTE COMMAND DISPATCHER ---
+    function sendCmd(type, value = null) {
+      if (dataConn && dataConn.open) {
+        dataConn.send({ type: type, value: value });
+      } else {
+        alert("Control channel connecting... Please wait a moment.");
+      }
+    }
+
+    function toggleTorch() {
+      torchState = !torchState;
+      const btn = document.getElementById("torchBtn");
+      btn.innerText = torchState ? "💡 Torch: ON" : "💡 Torch: OFF";
+      sendCmd("TORCH", torchState);
+    }
+
+    function handleZoom(val) {
+      document.getElementById("zoomVal").innerText = val + "x";
+      sendCmd("ZOOM", parseFloat(val));
+    }
+
+    function toggleSiren() {
+      sirenState = !sirenState;
+      const btn = document.getElementById("sirenBtn");
+      if (sirenState) {
+        btn.innerText = "🛑 Stop Siren";
+        btn.style.background = "#ffffff";
+        btn.style.color = "#ff2a2a";
+        sendCmd("SIREN_ON");
+      } else {
+        btn.innerText = "🚨 Sound Siren";
+        btn.style.background = "#ff2a2a";
+        btn.style.color = "#ffffff";
+        sendCmd("SIREN_OFF");
+      }
+    }
+
     function createSilentAudioStream() {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const oscillator = ctx.createOscillator();
@@ -115,7 +197,7 @@
       oscillator.connect(dst);
       oscillator.start();
       const track = dst.stream.getAudioTracks()[0];
-      track.enabled = false; // Muted dummy track
+      track.enabled = false;
       return track;
     }
 
@@ -147,34 +229,28 @@
       peer.on("open", () => {
         status.innerText = `Calling camera [${userChosenId}]...`;
 
-        // Canvas dummy video track
+        // Establish DataChannel for hardware commands
+        dataConn = peer.connect(fullNetworkId);
+        dataConn.on("open", () => console.log("Control channel established."));
+
+        // Setup Media Stream Call
         const canvas = document.createElement("canvas");
         canvas.width = 10; canvas.height = 10;
         const dummyStream = canvas.captureStream(5);
-
-        // Crucial: Add a dummy audio track so WebRTC agrees to negotiate incoming audio
         try {
           dummyStream.addTrack(createSilentAudioStream());
-        } catch (e) {
-          console.warn("Could not attach silent audio track", e);
-        }
+        } catch (e) {}
 
         const call = peer.call(fullNetworkId, dummyStream);
 
         call.on("stream", (remoteStream) => {
           btn.innerText = "Connected";
-          
-          const audioTracks = remoteStream.getAudioTracks();
-          if (audioTracks.length > 0) {
-            status.innerText = "🔴 LIVE FEED ACTIVE (Video + Audio)";
-          } else {
-            status.innerText = "🔴 LIVE FEED ACTIVE (Video Only - No mic on camera)";
-          }
+          status.innerText = "🔴 LIVE FEED ACTIVE";
           status.style.color = "#34c759";
           videoBox.style.display = "block";
 
           video.srcObject = remoteStream;
-          video.muted = true; // Browser requires initial muted autoplay
+          video.muted = true;
           video.play().catch(() => {});
         });
 
@@ -187,11 +263,7 @@
 
       peer.on("error", (err) => {
         btn.innerText = "Connect Live Stream";
-        if (err.type === "peer-unavailable") {
-          status.innerText = `Camera "${userChosenId}" is offline or still starting.`;
-        } else {
-          status.innerText = `Notice: ${err.type}`;
-        }
+        status.innerText = err.type === "peer-unavailable" ? `Camera "${userChosenId}" is offline.` : `Notice: ${err.type}`;
         status.style.color = "#ff453a";
       });
     }
@@ -215,12 +287,8 @@
       const status = document.getElementById("decryptStatus");
       const player = document.getElementById("vaultPlayer");
 
-      if (!fileInput.files.length) {
-        status.innerText = "Select an .enc file first.";
-        return;
-      }
-      if (!password) {
-        status.innerText = "Enter your vault password.";
+      if (!fileInput.files.length || !password) {
+        status.innerText = "Select file and provide password.";
         return;
       }
 
